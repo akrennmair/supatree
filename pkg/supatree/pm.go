@@ -129,8 +129,10 @@ routed to it.
 
 ## Every turn, before anything else
 
-1. Call ` + "`requests`" + ` and act on what is queued. Nothing interrupts you to say
-   a request arrived, so an unread request is one nobody has acted on.
+1. Call ` + "`requests`" + ` and act on what is queued. When a request arrives, the
+   sidebar may type "You got mail." into your prompt: that is not a request
+   itself, only a signal to call ` + "`requests`" + ` now. It is optional and may be
+   off, so never wait for it — an unread request is one nobody has acted on.
 2. Call ` + "`inbox`" + ` for replies agents have left you.
 
 ## What you can do
