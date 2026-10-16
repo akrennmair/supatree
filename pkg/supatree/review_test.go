@@ -490,7 +490,32 @@ func TestAddReviewRefusesARedirectedMember(t *testing.T) {
 		t.Fatal(err)
 	}
 	res, err := AddReview(c, "rev", []ReviewRef{{Repo: "o/b", Number: 1, URL: "https://github.com/o/b/pull/1"}}, PMAgentName, false)
-	if err != nil || len(res) != 1 || !strings.Contains(res[0].Skipped, "not a directory supatree made") {
+	if err != nil || len(res) != 1 || !strings.Contains(res[0].Skipped, "not this tree's worktree") {
 		t.Errorf("add through a symlinked member: %+v, %v", res, err)
+	}
+}
+
+// The clone is shared by every tree: repos/ linked into another tree must not
+// get that tree's worktree removed.
+func TestAddReviewRefusesAnotherTreesWorktree(t *testing.T) {
+	c, inst, _ := addReviewFixture(t)
+	other, _, err := NewReview(c, ReviewOptions{Stack: "s", Name: "other",
+		PRs: []ReviewRef{{Repo: "o/a", Number: 1, URL: "https://github.com/o/a/pull/1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repos := filepath.Join(inst.Root, ReposDirName)
+	if err := os.RemoveAll(repos); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(other.Root, ReposDirName), repos); err != nil {
+		t.Fatal(err)
+	}
+	res, err := AddReview(c, "rev", []ReviewRef{{Repo: "o/b", Number: 1, URL: "https://github.com/o/b/pull/1"}}, PMAgentName, false)
+	if err != nil || len(res) != 1 || res[0].Skipped == "" {
+		t.Fatalf("add through a repos/ linked into another tree: %+v, %v; want it refused", res, err)
+	}
+	if _, err := os.Stat(filepath.Join(other.Root, ReposDirName, "b", ".git")); err != nil {
+		t.Error("the other tree's worktree was removed")
 	}
 }

@@ -6,8 +6,10 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/panamafrancis/workbench/pkg/config"
+	"github.com/panamafrancis/workbench/pkg/git"
 )
 
 // The PM's configuration repo (#11). A PM's home is runtime state — mail,
@@ -36,39 +38,66 @@ const pmConfigDirName = "pms"
 // SetPMConfig registers dir as the PM config repo. It must be a git repository
 // a PM cannot write: not under the stacks, the trees, or supatree's state.
 func SetPMConfig(dir string) error {
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return err
-	}
-	if !isGitRepo(abs) {
-		return fmt.Errorf("%s is not a git repository — the PM config is versioned, so it has to be one", abs)
-	}
 	cfg, err := Load()
 	if err != nil {
 		return err
 	}
-	real, err := filepath.EvalSymlinks(abs)
+	real, err := checkPMConfig(cfg, dir)
 	if err != nil {
 		return err
 	}
-	for _, writable := range []string{StacksDir(), cfg.ResolveTreesBase(), StateRoot()} {
-		w, err := filepath.EvalSymlinks(writable)
-		if err != nil {
-			w = writable
-		}
-		if real == w || underDir(w, real) {
-			return fmt.Errorf("%s is inside %s, which an agent can write — the PM config must be somewhere no PM can edit", abs, writable)
-		}
-	}
-	for _, s := range cfg.Stacks {
-		if s.Path != "" && (real == s.Path || underDir(s.Path, real)) {
-			return fmt.Errorf("%s is inside stack %s, which the PM can write — keep the PM config in its own repo", abs, s.Alias)
-		}
-	}
 	return withConfig(func(c *Config) error {
-		c.PMConfig = abs
+		c.PMConfig = real
 		return nil
 	})
+}
+
+// checkPMConfig resolves dir and refuses it unless it is a git repository
+// outside everything an agent can write. Both sides are compared resolved, and
+// the check runs again at every launch (usablePMConfig): a link changed after
+// registration must not hand the PMs a config an agent wrote.
+func checkPMConfig(cfg *Config, dir string) (string, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	real, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", err
+	}
+	if !isGitRepo(real) {
+		return "", fmt.Errorf("%s is not a git repository — the PM config is versioned, so it has to be one", abs)
+	}
+	writable := []string{StacksDir(), cfg.ResolveTreesBase(), StateRoot(), CacheDir()}
+	for _, s := range cfg.Stacks {
+		if s.Path != "" {
+			writable = append(writable, s.Path)
+		}
+	}
+	for _, w := range writable {
+		rw, err := filepath.EvalSymlinks(w)
+		if err != nil {
+			rw = filepath.Clean(w)
+		}
+		if real == rw || underDir(rw, real) || underDir(real, rw) {
+			return "", fmt.Errorf("%s overlaps %s, which an agent can write — the PM config must be somewhere no PM can edit", abs, w)
+		}
+	}
+	return real, nil
+}
+
+// usablePMConfig is the registered PM config repo, re-checked, or "" — with
+// the refusal logged — when it no longer passes.
+func usablePMConfig(cfg *Config) string {
+	if cfg == nil || cfg.PMConfig == "" {
+		return ""
+	}
+	real, err := checkPMConfig(cfg, cfg.PMConfig)
+	if err != nil {
+		logLaunch("PM config", PMTab, "not used: "+err.Error())
+		return ""
+	}
+	return real
 }
 
 // withConfig edits the config under the registry lock.
@@ -132,9 +161,11 @@ func PMConfigHead(repo string) string {
 }
 
 // linkPMClaudeDir points the PM's home .claude at the config repo's, so its
-// skills, commands and settings are what every PM loads. A real .claude
-// directory already there — settings someone made by hand — is left alone
-// and reported, never replaced.
+// skills, commands and settings are what every PM loads. The PM's home is the
+// PM's to write, so whatever else stands there — a directory made by hand, or
+// by a PM giving itself skills of its own — is moved aside (kept, under a
+// timestamped name) and the link restored on every launch: with a config repo
+// registered, that repo is what governs the PMs.
 func linkPMClaudeDir(repo string) error {
 	src := filepath.Join(repo, ".claude")
 	dst := filepath.Join(PMDir(), ".claude")
@@ -144,14 +175,19 @@ func linkPMClaudeDir(repo string) error {
 		return err
 	}
 	if fi, err := os.Lstat(dst); err == nil {
-		if fi.Mode()&os.ModeSymlink == 0 {
-			return fmt.Errorf("%s is a directory of its own, so the PM config's .claude was not linked — move what is in it into %s", dst, src)
-		}
-		if cur, _ := os.Readlink(dst); cur == src {
-			return nil
-		}
-		if err := os.Remove(dst); err != nil {
-			return err
+		if fi.Mode()&os.ModeSymlink != 0 {
+			if cur, _ := os.Readlink(dst); cur == src {
+				return nil
+			}
+			if err := os.Remove(dst); err != nil {
+				return err
+			}
+		} else {
+			aside := dst + ".moved-" + time.Now().UTC().Format("20060102-150405")
+			if err := os.Rename(dst, aside); err != nil {
+				return err
+			}
+			logLaunch("PM config", PMTab, fmt.Sprintf("moved %s aside to %s; the PM config repo's .claude governs the PMs — merge what you need into %s", dst, aside, src))
 		}
 	}
 	return os.Symlink(src, dst)
@@ -176,13 +212,23 @@ func SetPMConfigAt(name, sha string) error {
 
 // pmSettingsArgs are the extra launch arguments for pm: its own settings file
 // from the config repo, for a claude model.
+//
+// The name comes from pms.yml, which sits in the PM's own (writable) home, so
+// it is validated and the path held inside the repo's pms/ — a name like
+// "../../x" must not point --settings at a file a PM wrote.
 func pmSettingsArgs(repo, binary string, pm PM) []string {
-	if repo == "" || filepath.Base(binary) != "claude" {
+	if repo == "" || filepath.Base(binary) != "claude" || git.ValidateName(pm.Name, nil) != nil {
 		return nil
 	}
-	path := filepath.Join(repo, pmConfigDirName, pm.Name, "settings.json")
-	if _, err := os.Stat(path); err != nil {
+	base := filepath.Join(repo, pmConfigDirName)
+	path := filepath.Join(base, pm.Name, "settings.json")
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
 		return nil
 	}
-	return []string{"--settings", path}
+	realBase, err := filepath.EvalSymlinks(base)
+	if err != nil || !underDir(realBase, real) {
+		return nil
+	}
+	return []string{"--settings", real}
 }

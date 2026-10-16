@@ -41,10 +41,8 @@ func PMGrants(cfg *Config) sandbox.Grants {
 	}
 	// Read, never written: a PM editing the skills and settings that govern
 	// it would be a PM widening its own permissions.
-	if cfg.PMConfig != "" {
-		if _, err := os.Stat(cfg.PMConfig); err == nil {
-			g.Read = append(g.Read, cfg.PMConfig)
-		}
+	if repo := usablePMConfig(cfg); repo != "" {
+		g.Read = append(g.Read, repo)
 	}
 	// The stack repos hold the notes the PM curates. They are git repos, so
 	// anything it writes there arrives as a diff you can review.
@@ -249,9 +247,10 @@ func ScaffoldPM() error {
 		return fmt.Errorf("create PM dir: %w", err)
 	}
 	body := pmAgentsMD
-	if cfg, err := Load(); err == nil && cfg.PMConfig != "" {
-		body += pmOverlay(cfg.PMConfig)
-		if err := linkPMClaudeDir(cfg.PMConfig); err != nil {
+	if cfg, err := Load(); err == nil && usablePMConfig(cfg) != "" {
+		repo := usablePMConfig(cfg)
+		body += pmOverlay(repo)
+		if err := linkPMClaudeDir(repo); err != nil {
 			logLaunch("PM config", PMTab, "not linked: "+err.Error())
 		}
 	}
@@ -392,7 +391,7 @@ func openPMLocked(cfg *Config, ws zellij.Workspace, sidebarWidth string, pm PM) 
 		return false, fmt.Errorf("refusing to build a sandbox with no filesystem grants")
 	}
 	nonoArgs := sandbox.BuildGrantedAgentNonoArgs(model, grants, PMDir(), sid, pm.Address(), resume)
-	nonoArgs = append(nonoArgs, pmSettingsArgs(cfg.PMConfig, model.Binary, pm)...)
+	nonoArgs = append(nonoArgs, pmSettingsArgs(usablePMConfig(cfg), model.Binary, pm)...)
 	action, err := ws.OpenOrFocusTabAction(pm.Tab(), PMDir(), sidebarWidth, nonoArgs, withAgentExec(PMEnv(pm)))
 	if err != nil {
 		logLaunch("PM "+pm.Name, pm.Tab(), "failed: "+err.Error())

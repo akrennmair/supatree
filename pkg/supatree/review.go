@@ -543,16 +543,14 @@ func AddReview(c *Config, name string, prs []ReviewRef, from string, vet bool) (
 // a checkout with whatever filters the repository names — the member is
 // removed and re-created at the PR head by addWorktree, with them pinned off.
 func moveBystanderToPR(c *Config, root string, meta *Meta, alias, url string, pr ReviewRef) (string, error) {
-	path := MemberPath(root, alias)
-	if fi, err := os.Lstat(path); err != nil || !fi.IsDir() {
-		return "", fmt.Errorf("repos/%s is not a directory supatree made — leaving it alone", alias)
-	}
 	repo, err := c.ResolveMember(alias, url)
 	if err != nil {
 		return "", err
 	}
-	if common, err := GitCommonDir(path); err != nil || !samePath(common, filepath.Join(repo.Clone, ".git")) {
-		return "", fmt.Errorf("repos/%s is not a worktree of %s's cached clone — leaving it alone", alias, url)
+	branch := meta.MemberBranch(alias)
+	path, err := ownMemberWorktree(root, alias, repo.Clone, branch)
+	if err != nil {
+		return "", err
 	}
 	if git.IsDirty(path) {
 		return "", errors.New("uncommitted changes here — commit or discard them, then add it again")
@@ -560,9 +558,13 @@ func moveBystanderToPR(c *Config, root string, meta *Meta, alias, url string, pr
 	if n, err := git.CommitsAhead(path); err == nil && n > 0 {
 		return "", fmt.Errorf("%d commit(s) of its own on this member — it is not idle, so it is not moved", n)
 	}
-	branch := meta.MemberBranch(alias)
 	sha, err := git.FetchRef(repo.Clone, fmt.Sprintf("refs/pull/%d/head", pr.Number))
 	if err != nil {
+		return "", err
+	}
+	// Again, immediately before anything is removed: the check above was a
+	// fetch ago, and the path is the agent's to swap.
+	if _, err := ownMemberWorktree(root, alias, repo.Clone, branch); err != nil {
 		return "", err
 	}
 	if err := git.RemoveWorktree(repo.Clone, path); err != nil {
@@ -575,11 +577,47 @@ func moveBystanderToPR(c *Config, root string, meta *Meta, alias, url string, pr
 	return sha, nil
 }
 
-// samePath compares two paths after resolving links, for paths git reports.
-func samePath(a, b string) bool {
-	ra, errA := filepath.EvalSymlinks(a)
-	rb, errB := filepath.EvalSymlinks(b)
-	return errA == nil && errB == nil && ra == rb
+// ownMemberWorktree finds repos/<alias> of the tree at root as the clone
+// itself records it, and returns its real path — or refuses. The clone is
+// shared by every tree, so "a worktree of this clone" is not enough: repos/ or
+// the member could be a link into another tree, whose worktree would then be
+// the one removed. The resolved path must sit exactly at root/repos/<alias>
+// with no link on the way, and the clone must list it on this tree's own
+// branch — whose name carries the tree's slug.
+func ownMemberWorktree(root, alias, clone, branch string) (string, error) {
+	refuse := fmt.Errorf("repos/%s is not this tree's worktree of its cached clone — leaving it alone", alias)
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", refuse
+	}
+	want := filepath.Join(realRoot, ReposDirName, alias)
+	for _, p := range []string{filepath.Join(root, ReposDirName), MemberPath(root, alias)} {
+		if fi, err := os.Lstat(p); err != nil || !fi.IsDir() {
+			return "", refuse // missing, or a link
+		}
+	}
+	got, err := filepath.EvalSymlinks(MemberPath(root, alias))
+	if err != nil || got != want {
+		return "", refuse
+	}
+	out, err := gitOutput(clone, "worktree", "list", "--porcelain")
+	if err != nil {
+		return "", refuse
+	}
+	for _, block := range strings.Split(out, "\n\n") {
+		var wt, br string
+		for _, line := range strings.Split(block, "\n") {
+			if v, ok := strings.CutPrefix(line, "worktree "); ok {
+				wt = v
+			} else if v, ok := strings.CutPrefix(line, "branch "); ok {
+				br = strings.TrimPrefix(v, "refs/heads/")
+			}
+		}
+		if r, err := filepath.EvalSymlinks(wt); err == nil && r == want && br == branch {
+			return want, nil
+		}
+	}
+	return "", refuse
 }
 
 // createReviewMember checks a member out at the PR head, as creating the

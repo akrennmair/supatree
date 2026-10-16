@@ -84,17 +84,66 @@ func TestSetPMConfigRefusesAgentWritablePlaces(t *testing.T) {
 	if err := SetPMConfig(inStacks); err == nil || !strings.Contains(err.Error(), "agent can write") {
 		t.Errorf("under the stacks dir: err = %v", err)
 	}
+	// A link elsewhere that leads into the stacks is judged by where it leads.
+	link := filepath.Join(t.TempDir(), "pm-config")
+	if err := os.Symlink(inStacks, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetPMConfig(link); err == nil {
+		t.Error("a link into the stacks dir was accepted")
+	}
 }
 
-// A .claude directory someone made by hand in the PM's home is not replaced.
-func TestPMConfigLeavesAHandMadeClaudeDir(t *testing.T) {
+// A registered config whose path is later swapped for a link into agent-
+// writable space is not used at launch.
+func TestPMConfigRecheckedAtLaunch(t *testing.T) {
+	repo := pmConfigRepo(t)
+	cfg, _ := Load()
+	if got := usablePMConfig(cfg); got == "" {
+		t.Fatal("a good config was refused")
+	}
+	if err := os.RemoveAll(repo); err != nil {
+		t.Fatal(err)
+	}
+	inStacks := filepath.Join(StacksDir(), "planted")
+	run(t, t.TempDir(), "init", "-q", inStacks)
+	if err := os.Symlink(inStacks, repo); err != nil {
+		t.Fatal(err)
+	}
+	if got := usablePMConfig(cfg); got != "" {
+		t.Errorf("usablePMConfig = %q; a config now leading into the stacks dir must not be used", got)
+	}
+	if g := PMGrants(cfg); strings.Contains(strings.Join(g.Read, " "), "planted") {
+		t.Error("the PM was granted the swapped-in config")
+	}
+}
+
+// Whatever stands at the PM's .claude — made by hand, or by a PM giving
+// itself skills — is moved aside, kept, and the repo's link restored.
+func TestPMConfigReclaimsTheClaudeDir(t *testing.T) {
 	_ = pmConfigRepo(t)
 	mine := filepath.Join(PMDir(), ".claude", "settings.local.json")
 	writeFile(t, mine, "{\"mine\": true}\n")
 	if err := ScaffoldPM(); err != nil {
 		t.Fatal(err)
 	}
-	if body, err := os.ReadFile(mine); err != nil || !strings.Contains(string(body), "mine") {
-		t.Errorf("hand-made settings = %q, %v; want them kept", body, err)
+	if fi, err := os.Lstat(filepath.Join(PMDir(), ".claude")); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("the PM's .claude is not the config repo's link")
+	}
+	moved, _ := filepath.Glob(filepath.Join(PMDir(), ".claude.moved-*", "settings.local.json"))
+	if len(moved) != 1 {
+		t.Errorf("the hand-made settings were not kept aside: %v", moved)
+	}
+}
+
+// pms.yml is in the PM's writable home: a PM name walking out of pms/ gets no
+// --settings at all.
+func TestPMSettingsArgsStayInTheRepo(t *testing.T) {
+	repo := pmConfigRepo(t)
+	writeFile(t, filepath.Join(repo, "evil.json"), "{}\n")
+	for _, name := range []string{"../evil.json/..", "..", "../..", "a/b"} {
+		if got := pmSettingsArgs(repo, "claude", PM{Name: name}); len(got) != 0 {
+			t.Errorf("PM name %q got %v", name, got)
+		}
 	}
 }
