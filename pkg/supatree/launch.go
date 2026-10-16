@@ -1,6 +1,7 @@
 package supatree
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/panamafrancis/workbench/pkg/config"
+	"github.com/panamafrancis/workbench/pkg/git"
 	"github.com/panamafrancis/workbench/pkg/sandbox"
 )
 
@@ -97,6 +99,12 @@ func TakeLaunches(admit func(LaunchRequest) bool) ([]LaunchRequest, error) {
 			}
 			var r LaunchRequest
 			if err := json.Unmarshal([]byte(line), &r); err != nil || r.Tree == "" {
+				continue
+			}
+			// The queue is in the PM's directory, which its sandbox writes
+			// directly — QueueLaunch's checks are not the only way in. A
+			// request naming no valid tree and agent is dropped.
+			if git.ValidateName(r.Tree, nil) != nil || (r.Agent != "" && ValidateAgentName(r.Agent) != nil) {
 				continue
 			}
 			if admit(r) {
@@ -374,7 +382,9 @@ func logLaunch(who, tab, what string) {
 		return
 	}
 	defer func() { _ = f.Close() }()
-	_, _ = fmt.Fprintf(f, "%s %s tab=%s %s by=%s\n", time.Now().Format(time.RFC3339), who, tab, what, launchCaller())
+	// Quoted: an error from zellij or nono may span lines, and a field must
+	// never be able to forge a line of its own.
+	_, _ = fmt.Fprintf(f, "%s %q tab=%q %q by=%q\n", time.Now().Format(time.RFC3339), who, tab, what, launchCaller())
 }
 
 // launchCaller names what is opening an agent: the sidebar, the watcher, or a
@@ -399,6 +409,10 @@ func launchCaller() string {
 // the open that follows are seconds apart (preflight, trust, grants), and two
 // opens in that window — a `supatree pm` retried while the machine was slow —
 // each found no tab and each started a PM on the same session (#1).
+//
+// The tab is hex-encoded into the file name: it is built from a tree and agent
+// name, and the agent name can come from a queue file the PM's sandbox writes,
+// so it must not be able to name a path of its own.
 func openLockPath(tab string) string {
-	return filepath.Join(StateRoot(), "locks", "open-"+strings.ReplaceAll(tab, ":", "_")+".lock")
+	return filepath.Join(StateRoot(), "locks", "open-"+hex.EncodeToString([]byte(tab))+".lock")
 }

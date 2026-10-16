@@ -1,6 +1,7 @@
 package supatree
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -40,16 +41,24 @@ func TestPMGrants(t *testing.T) {
 	if len(g.Read) == 0 {
 		t.Error("Read is empty — the PM cannot see the trees at all")
 	}
-	// The repo cache is read as one directory, never clone by clone: a grant
-	// list that grows with the trees is one that goes stale under a running
-	// PM, and refreshing it meant relaunching the PM mid-session (#3).
+	// Every cached clone's git dir is read — not only those of trees that
+	// existed at launch, or the grant goes stale under a running PM and
+	// refreshing it means relaunching (#3) — and never a clone's working tree,
+	// which holds the files copy_files hands out.
+	for _, key := range []string{"github.com/o/used", "github.com/o/unused"} {
+		writeFile(t, filepath.Join(ReposDir(), key, ".git", "HEAD"), "ref: refs/heads/main\n")
+		writeFile(t, filepath.Join(ReposDir(), key, ".env"), "SECRET=1\n")
+	}
+	g = PMGrants(cfg)
 	read := strings.Join(g.Read, " ")
-	if !strings.Contains(read, ReposDir()) {
-		t.Errorf("Read = %v, want the repo cache %q", g.Read, ReposDir())
+	for _, key := range []string{"github.com/o/used", "github.com/o/unused"} {
+		if !strings.Contains(read, filepath.Join(ReposDir(), key, ".git")) {
+			t.Errorf("Read = %v, want %s's git dir", g.Read, key)
+		}
 	}
 	for _, r := range g.Read {
-		if strings.HasSuffix(r, "/.git") {
-			t.Errorf("Read includes the per-clone %q", r)
+		if r == ReposDir() || (strings.HasPrefix(r, ReposDir()) && !strings.HasSuffix(r, "/.git")) {
+			t.Errorf("Read includes %q — a clone's working tree, or the whole cache", r)
 		}
 	}
 	for _, w := range g.Allow {

@@ -2,6 +2,7 @@ package supatree
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -267,6 +268,35 @@ func TestResolveMaxRunningAgents(t *testing.T) {
 	}{{nil, DefaultMaxRunningAgents}, {&zero, 0}, {&five, 5}} {
 		if got := (&Config{MaxRunningAgents: tc.set}).ResolveMaxRunningAgents(); got != tc.want {
 			t.Errorf("ResolveMaxRunningAgents(%v) = %d, want %d", tc.set, got, tc.want)
+		}
+	}
+}
+
+// The launch queue is written by the PM's sandbox directly, so the watcher
+// re-checks what QueueLaunch would have refused.
+func TestTakeLaunchesDropsInvalidNames(t *testing.T) {
+	testutil.IsolateHome(t)
+	if _, err := QueueLaunch(LaunchRequest{Tree: treeA}); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(LaunchPath(), os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString(`{"tree":"canberra","agent":"../../x"}` + "\n" + `{"tree":"../up","agent":"main"}` + "\n")
+	_ = f.Close()
+	reqs, _ := DrainLaunches()
+	if len(reqs) != 1 || reqs[0].Agent != MainAgent {
+		t.Errorf("took %+v; want only the valid request", reqs)
+	}
+}
+
+func TestOpenLockPathStaysInLocks(t *testing.T) {
+	testutil.IsolateHome(t)
+	for _, tab := range []string{"canberra:main", "../../etc/x", "a/b"} {
+		p := openLockPath(tab)
+		if filepath.Dir(p) != filepath.Join(StateRoot(), "locks") {
+			t.Errorf("openLockPath(%q) = %q, outside the locks dir", tab, p)
 		}
 	}
 }

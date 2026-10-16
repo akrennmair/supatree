@@ -25,17 +25,19 @@ const PMAddress = "st-pm"
 // notes in. It reads the trees, the ledger, its request queue, and the git
 // dirs a status round reads.
 //
-// Because tree state is one directory, and the repo cache is read as one
-// directory rather than clone by clone, a supatree created after the PM
-// started — on repos it has never seen — is already inside its grant: nothing
-// has to be relaunched (supatree#3). Reading the cache is no wider in kind than
-// reading the trees base, which already holds every checkout.
+// Because tree state is one directory, and the git dir of every clone in the
+// repo cache is read (not only those of trees that existed at launch), a
+// supatree created after the PM started is already inside its grant: nothing
+// has to be relaunched (supatree#3). Only the clones' git dirs, never their
+// working trees — a base clone holds the gitignored files copy_files hands
+// out (.env and the like), for repos no tree may be using. A repo cloned for
+// the first time after launch stays unreadable until the PM's next launch.
 // Creating or removing a tree is not something the PM does itself — those
 // write repos/ and base clones — it asks the watcher (ops.go).
 func PMGrants(cfg *Config) sandbox.Grants {
 	g := sandbox.Grants{
 		Allow: []string{PMDir(), TreesStateDir(), OutboxDir()},
-		Read:  []string{cfg.ResolveTreesBase(), LedgerDir(), RequestsDir(), ReposDir()},
+		Read:  []string{cfg.ResolveTreesBase(), LedgerDir(), RequestsDir()},
 	}
 	// The stack repos hold the notes the PM curates. They are git repos, so
 	// anything it writes there arrives as a diff you can review.
@@ -47,9 +49,34 @@ func PMGrants(cfg *Config) sandbox.Grants {
 			g.Allow = append(g.Allow, s.Path)
 		}
 	}
+	g.Read = append(g.Read, cachedCloneGitDirs()...)
 	g.Allow = dedupe(g.Allow)
 	g.Read = dedupe(g.Read)
 	return g
+}
+
+// cachedCloneGitDirs lists the .git dir of every clone in the repo cache. No
+// git is run: this is on the PM's launch path.
+func cachedCloneGitDirs() []string {
+	root := ReposDir()
+	var out []string
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return filepath.SkipDir // unreadable (or no cache yet): nothing to grant
+		}
+		if !d.IsDir() || path == root {
+			return nil
+		}
+		if strings.HasPrefix(d.Name(), ".") && strings.Contains(d.Name(), ".clone-") {
+			return filepath.SkipDir // an in-progress clone
+		}
+		if isClone(path) {
+			out = append(out, filepath.Join(path, ".git"))
+			return filepath.SkipDir
+		}
+		return nil
+	})
+	return out
 }
 
 // underDir reports whether path sits inside dir, so a stack registered at its
