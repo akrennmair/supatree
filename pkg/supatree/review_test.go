@@ -310,13 +310,19 @@ func TestReviewTreeReachesReviewedWithBystanders(t *testing.T) {
 	}
 }
 
+// repoOA and repoOB are the GitHub repos the review fixtures map members a and b to.
+const (
+	repoOA = "o/a"
+	repoOB = "o/b"
+)
+
 // reviewStackFixture is a stack with an origin — trees are built from origin's
 // default branch, which is what lets the local checkout run ahead of it — and
 // member repos that resolve to o/<alias> on GitHub, each with a PR #1 head.
 func reviewStackFixture(t *testing.T) (c *Config, a, b string) {
 	t.Helper()
 	c, a, b = stackFixture(t)
-	repos := map[string]string{a: "o/a", b: "o/b"}
+	repos := map[string]string{a: repoOA, b: repoOB}
 	orig := resolveRemote
 	t.Cleanup(func() { resolveRemote = orig })
 	resolveRemote = func(raw string) (github.RemoteRef, bool) {
@@ -339,7 +345,7 @@ func reviewStackFixture(t *testing.T) (c *Config, a, b string) {
 func TestNewReviewChecksOutThePR(t *testing.T) {
 	c, _, _ := reviewStackFixture(t)
 	inst, _, err := NewReview(c, ReviewOptions{Stack: "s", Name: "rev",
-		PRs: []ReviewRef{{Repo: "o/a", Number: 1, URL: "https://github.com/o/a/pull/1"}}})
+		PRs: []ReviewRef{{Repo: repoOA, Number: 1, URL: "https://github.com/o/a/pull/1"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,7 +371,7 @@ func TestNewReviewRefusesAMemberThatWasNeverPushed(t *testing.T) {
 	}
 	run(t, stack, "commit", "-q", "-am", "supatree: add b (local only)")
 	_, _, err = NewReview(c, ReviewOptions{Stack: "s", Name: "rev",
-		PRs: []ReviewRef{{Repo: "o/b", Number: 1, URL: "https://github.com/o/b/pull/1"}}})
+		PRs: []ReviewRef{{Repo: repoOB, Number: 1, URL: "https://github.com/o/b/pull/1"}}})
 	if err == nil {
 		t.Fatal("a review of a repo missing from origin's spec was accepted")
 	}
@@ -379,7 +385,7 @@ func TestNewReviewRefusesAMemberThatWasNeverPushed(t *testing.T) {
 	// Once pushed, the same review works.
 	run(t, c.FindStack("s").Path, "push", "-q", "origin", "HEAD:main")
 	inst, _, err := NewReview(c, ReviewOptions{Stack: "s", Name: "rev",
-		PRs: []ReviewRef{{Repo: "o/b", Number: 1, URL: "https://github.com/o/b/pull/1"}}})
+		PRs: []ReviewRef{{Repo: repoOB, Number: 1, URL: "https://github.com/o/b/pull/1"}}})
 	if err != nil {
 		t.Fatalf("after pushing: %v", err)
 	}
@@ -412,7 +418,7 @@ func addReviewFixture(t *testing.T) (c *Config, inst *Instance, prHead string) {
 
 	var err error
 	inst, _, err = NewReview(c, ReviewOptions{Stack: "s", Name: "rev",
-		PRs: []ReviewRef{{Repo: "o/a", Number: 1, URL: "https://github.com/o/a/pull/1"}}})
+		PRs: []ReviewRef{{Repo: repoOA, Number: 1, URL: "https://github.com/o/a/pull/1"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,7 +433,7 @@ func TestAddReview(t *testing.T) {
 	// Uncommitted work on the bystander: reported, not reset.
 	writeFile(t, filepath.Join(memberB, "scratch.txt"), "mine\n")
 	run(t, memberB, "add", "scratch.txt")
-	prB := ReviewRef{Repo: "o/b", Number: 1, URL: "https://github.com/o/b/pull/1"}
+	prB := ReviewRef{Repo: repoOB, Number: 1, URL: "https://github.com/o/b/pull/1"}
 	res, err := AddReview(c, "rev", []ReviewRef{prB}, PMAgentName, false)
 	if err != nil || len(res) != 1 || !strings.Contains(res[0].Skipped, "uncommitted") {
 		t.Fatalf("add over uncommitted work: %+v, %v", res, err)
@@ -436,8 +442,8 @@ func TestAddReview(t *testing.T) {
 
 	res, err = AddReview(c, "rev", []ReviewRef{
 		prB,
-		{Repo: "o/a", Number: 1, URL: "https://github.com/o/a/pull/1"},
-		{Repo: "o/a", Number: 2, URL: "https://github.com/o/a/pull/2"},
+		{Repo: repoOA, Number: 1, URL: "https://github.com/o/a/pull/1"},
+		{Repo: repoOA, Number: 2, URL: "https://github.com/o/a/pull/2"},
 		{Repo: "o/nope", Number: 3, URL: "https://github.com/o/nope/pull/3"},
 	}, PMAgentName, false)
 	if err != nil {
@@ -489,7 +495,7 @@ func TestAddReviewRefusesARedirectedMember(t *testing.T) {
 	if err := os.Symlink(elsewhere, member); err != nil {
 		t.Fatal(err)
 	}
-	res, err := AddReview(c, "rev", []ReviewRef{{Repo: "o/b", Number: 1, URL: "https://github.com/o/b/pull/1"}}, PMAgentName, false)
+	res, err := AddReview(c, "rev", []ReviewRef{{Repo: repoOB, Number: 1, URL: "https://github.com/o/b/pull/1"}}, PMAgentName, false)
 	if err != nil || len(res) != 1 || !strings.Contains(res[0].Skipped, "not this tree's worktree") {
 		t.Errorf("add through a symlinked member: %+v, %v", res, err)
 	}
@@ -500,7 +506,7 @@ func TestAddReviewRefusesARedirectedMember(t *testing.T) {
 func TestAddReviewRefusesAnotherTreesWorktree(t *testing.T) {
 	c, inst, _ := addReviewFixture(t)
 	other, _, err := NewReview(c, ReviewOptions{Stack: "s", Name: "other",
-		PRs: []ReviewRef{{Repo: "o/a", Number: 1, URL: "https://github.com/o/a/pull/1"}}})
+		PRs: []ReviewRef{{Repo: repoOA, Number: 1, URL: "https://github.com/o/a/pull/1"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -511,7 +517,7 @@ func TestAddReviewRefusesAnotherTreesWorktree(t *testing.T) {
 	if err := os.Symlink(filepath.Join(other.Root, ReposDirName), repos); err != nil {
 		t.Fatal(err)
 	}
-	res, err := AddReview(c, "rev", []ReviewRef{{Repo: "o/b", Number: 1, URL: "https://github.com/o/b/pull/1"}}, PMAgentName, false)
+	res, err := AddReview(c, "rev", []ReviewRef{{Repo: repoOB, Number: 1, URL: "https://github.com/o/b/pull/1"}}, PMAgentName, false)
 	if err != nil || len(res) != 1 || res[0].Skipped == "" {
 		t.Fatalf("add through a repos/ linked into another tree: %+v, %v; want it refused", res, err)
 	}
