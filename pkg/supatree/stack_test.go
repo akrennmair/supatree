@@ -159,6 +159,25 @@ func TestRemoveCachedRepoRefusesInUse(t *testing.T) {
 	}
 }
 
+// sameOwner makes the stack's existing member and b resolve to one GitHub
+// owner, so a PM may add b alongside it (ownerVouchedFor).
+func sameOwner(t *testing.T, c *Config, b string) {
+	t.Helper()
+	spec, err := LoadSpec(c.FindStack("s").Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	urls := map[string]string{spec.Members["a"]: "git@github.com:team/a.git", b: "git@github.com:team/b.git"}
+	orig := resolveRemote
+	t.Cleanup(func() { resolveRemote = orig })
+	resolveRemote = func(raw string) (github.RemoteRef, bool) {
+		if u, ok := urls[raw]; ok {
+			return github.ParseRemote(u)
+		}
+		return orig(raw)
+	}
+}
+
 // stackWithOrigin is stackFixture with a bare origin the stack tracks, the
 // shape every shared stack has.
 func stackWithOrigin(t *testing.T) (c *Config, stack, origin, b string) {
@@ -262,6 +281,7 @@ func TestStackEditFallsBackToAPullRequest(t *testing.T) {
 // from a private clone, and refuses a stack nobody pinned.
 func TestWatcherStackEditIgnoresTheCheckout(t *testing.T) {
 	c, stack, origin, b := stackWithOrigin(t)
+	sameOwner(t, c, b)
 	if _, err := c.StackAdd("s", "b", b, false, ByWatcher); err == nil || !strings.Contains(err.Error(), "supatree stack pin") {
 		t.Fatalf("unpinned stack: err = %v; want a refusal naming stack pin", err)
 	}
@@ -319,6 +339,9 @@ func TestRunStackEditOp(t *testing.T) {
 	resolveRemote = func(raw string) (github.RemoteRef, bool) {
 		if raw == b {
 			return github.ParseRemote("git@github.com:o/b.git")
+		}
+		if spec, _ := LoadSpec(c.FindStack("s").Path); spec != nil && raw == spec.Members["a"] {
+			return github.ParseRemote("git@github.com:o/a.git") // the existing member vouches for o
 		}
 		return orig(raw)
 	}
@@ -439,5 +462,52 @@ func TestIsLocalGitURL(t *testing.T) {
 	}
 	if got := AbsGitURL("git@github.com:o/r.git", "/a/b"); got != "git@github.com:o/r.git" {
 		t.Errorf("AbsGitURL remote = %q", got)
+	}
+}
+
+// A PM may add a repository only under an owner the pinned origin's spec, or
+// the origin itself, already uses: the watcher clones with the human's
+// credentials, which reach every private repository they can.
+func TestWatcherAddStaysWithTheStacksOwners(t *testing.T) {
+	_, stack, origin, b := stackWithOrigin(t)
+	orig := resolveRemote
+	t.Cleanup(func() { resolveRemote = orig })
+	fake := map[string]string{b: "git@github.com:team/b.git"}
+	resolveRemote = func(raw string) (github.RemoteRef, bool) {
+		if u, ok := fake[raw]; ok {
+			raw = u
+		}
+		return github.ParseRemote(raw)
+	}
+	if err := PinStackOrigin("s", origin); err != nil {
+		t.Fatal(err)
+	}
+	c, _ := Load()
+	if _, err := c.StackAdd("s", "b", b, false, ByWatcher); err == nil || !strings.Contains(err.Error(), "not under an owner") {
+		t.Fatalf("first team repo, nobody vouching: err = %v; want a refusal", err)
+	}
+	// A human adds one team repo; after that a PM may add its siblings.
+	if _, err := c.StackAdd("s", "b", b, false, ByHuman); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(t.TempDir(), "sibling")
+	fake[other] = "git@github.com:team/sibling.git"
+	if _, err := c.StackAdd("s", "sibling", other, false, ByWatcher); err != nil {
+		t.Errorf("a sibling under a vouched-for owner: %v", err)
+	}
+	stranger := filepath.Join(t.TempDir(), "stranger")
+	fake[stranger] = "git@github.com:someone-else/private.git"
+	if _, err := c.StackAdd("s", "stranger", stranger, false, ByWatcher); err == nil {
+		t.Error("a repository under an owner the stack does not use was added for the PM")
+	}
+	// The checkout is agent-writable: a member planted there vouches for nothing.
+	spec, _ := LoadSpec(stack)
+	spec.Members["planted"] = "git@github.com:someone-else/decoy.git"
+	if err := SaveSpec(stack, spec); err != nil {
+		t.Fatal(err)
+	}
+	run(t, stack, "commit", "-q", "-am", "planted")
+	if _, err := c.StackAdd("s", "stranger", stranger, false, ByWatcher); err == nil {
+		t.Error("a member planted in the checkout vouched for a new owner")
 	}
 }

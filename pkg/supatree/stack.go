@@ -46,6 +46,13 @@ func (c *Config) StackAdd(stackAlias, alias, url string, clone bool, mode StackE
 				return fmt.Errorf("%s is already a member, as %q", url, a)
 			}
 		}
+		// s is the pinned origin's spec, read in the watcher's private clone,
+		// so the owners it vouches for are ones a human put there.
+		if mode == ByWatcher && !ownerVouchedFor(url, stack.Origin, s) {
+			return fmt.Errorf("%s is not under an owner this stack already uses — the watcher clones with your credentials, "+
+				"so a PM may only add repositories alongside the stack's existing ones; add it from a terminal: supatree stack add %s %s",
+				url, stack.Alias, url)
+		}
 		if clone {
 			if _, err := c.ResolveMember(alias, url); err != nil {
 				return err
@@ -57,6 +64,31 @@ func (c *Config) StackAdd(stackAlias, alias, url string, clone bool, mode StackE
 		s.Members[alias] = url
 		return nil
 	})
+}
+
+// ownerVouchedFor reports whether url's host and owner are already in the
+// stack: a member's, or the pinned origin's own. A PM-requested member is
+// cloned — now or by the first tree to need it — with the human's
+// credentials, which reach every private repository they can; this keeps a
+// PM to the organisations the stack already works in.
+func ownerVouchedFor(url, origin string, s *Spec) bool {
+	want, ok := resolveRemote(url)
+	if !ok {
+		return false
+	}
+	same := func(u string) bool {
+		r, ok := resolveRemote(u)
+		return ok && strings.EqualFold(r.Host, want.Host) && strings.EqualFold(r.Owner, want.Owner)
+	}
+	if same(origin) {
+		return true
+	}
+	for _, u := range s.Members {
+		if same(u) {
+			return true
+		}
+	}
+	return false
 }
 
 // StackRm removes a member from a stack, and every dependency edge that names
