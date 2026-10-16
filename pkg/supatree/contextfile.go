@@ -232,6 +232,11 @@ Read ` + "`.supatree/info.md`" + ` for the current member list, branches, and me
   to the repo's git URL — then run the ` + "`sync`" + ` tool.
 - ` + "`scripts/setup`" + `, if present, runs once for every new tree made from this
   stack, before any agent starts. It cannot prompt: stdin is closed.
+- To reach a PM, use ` + "`message_agent`" + ` with agent ` + "`pm`" + ` (the top PM) or
+  ` + "`pm-<name>`" + ` (a named one). PMs are not listed by ` + "`agents`" + `; the watcher
+  moves the message into that PM's ` + "`requests`" + ` within seconds. Don't use
+  ` + "`supatree request`" + ` or ` + "`supatree pm`" + ` from a tree: they need PM state the
+  tree sandbox does not grant.
 
 Add your issue-specific instructions below.
 `

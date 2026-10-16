@@ -142,7 +142,7 @@ func MCPServer(version string) *mcp.Server {
 			},
 			{
 				Name:        "agents",
-				Description: "List the agents attached to a supatree: their names, models, bus addresses and whether each is reachable now. Use an address with your own message-bus tool to reach one directly.",
+				Description: "List the agents attached to a supatree: their names, models, bus addresses and whether each is reachable now. Use an address with your own message-bus tool to reach one directly. PMs are not listed: reach them with `message_agent` as `pm` (the top PM) or `pm-<name>`.",
 				InputSchema: mcp.ObjectSchema(map[string]any{
 					argTree: mcp.StringProp("Supatree name (omit inside a supatree to mean your own)"),
 				}, nil),
@@ -150,9 +150,9 @@ func MCPServer(version string) *mcp.Server {
 			},
 			{
 				Name:        "message_agent",
-				Description: "Send a message to another agent in this supatree. Always delivered to the agent's mailbox, which it reads on its next turn; pair it with your own message-bus tool (see the address from `agents`) if you need it to arrive sooner.",
+				Description: "Send a message to another agent in this supatree. Always delivered to the agent's mailbox, which it reads on its next turn; pair it with your own message-bus tool (see the address from `agents`) if you need it to arrive sooner. To reach a PM, which is in no tree, use agent `pm` for the top PM or `pm-<name>` for a named one (e.g. `pm-roshi`).",
 				InputSchema: mcp.ObjectSchema(map[string]any{
-					"agent": mcp.StringProp("Agent name within the supatree (not its bus address)"),
+					"agent": mcp.StringProp("Agent name within the supatree (not its bus address), or `pm` / `pm-<name>` for a PM"),
 					"text":  mcp.StringProp("What to tell it"),
 					argTree: mcp.StringProp("Supatree name (omit inside a supatree to mean your own)"),
 				}, []string{"agent", "text"}),
@@ -956,7 +956,7 @@ func handleAgents(args map[string]any) (string, bool) {
 		return err.Error(), true
 	}
 	if len(agents) == 0 {
-		return "no agents have been launched in this supatree yet", false
+		return "no agents have been launched in this supatree yet\n" + pmReachHint, false
 	}
 	me := os.Getenv("SUPATREE_AGENT")
 	cfg, _ := Load()
@@ -981,8 +981,14 @@ func handleAgents(args map[string]any) (string, bool) {
 		}
 		fmt.Fprintf(&b, "%s %-16s %-10s %s%s\n", marker, a.Name, a.Model, reach, pending)
 	}
+	b.WriteString(pmReachHint)
 	return b.String(), false
 }
+
+// pmReachHint ends every agents listing. PMs live in no tree's agents.yml, so
+// a tree agent looking for one by name finds nothing here and would otherwise
+// go hunting for a CLI path its sandbox does not grant.
+const pmReachHint = "PMs are not listed here: message_agent reaches the top PM as `pm` and any other as `pm-<name>`.\n"
 
 // busAddress is the bus name an agent can be reached at, or "" when there is
 // none to give. The address is recorded at registration, but the agent only
@@ -1033,7 +1039,7 @@ func handleMessageAgent(args map[string]any) (string, bool) {
 		return fmt.Sprintf("left for %s in this tree's mailbox; the watcher moves it into that PM's `requests` on its next pass, every few seconds while the watcher runs.", to), false
 	}
 	if target == nil {
-		return fmt.Sprintf("no agent named %q in supatree %q — call `agents` to see them, or `start_agent` to launch one", to, inst.Name), true
+		return fmt.Sprintf("no agent named %q in supatree %q — call `agents` to see them, or `start_agent` to launch one; a PM is addressed as `pm` or `pm-<name>`", to, inst.Name), true
 	}
 	if err := Deliver(inst.Root, to, from, text); err != nil {
 		return err.Error(), true
