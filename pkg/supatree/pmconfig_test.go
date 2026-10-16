@@ -84,6 +84,12 @@ func TestSetPMConfigRefusesAgentWritablePlaces(t *testing.T) {
 	if err := SetPMConfig(inStacks); err == nil || !strings.Contains(err.Error(), "agent can write") {
 		t.Errorf("under the stacks dir: err = %v", err)
 	}
+	// The repo cache's clones are written by tree agents.
+	inCache := filepath.Join(ReposDir(), "github.com", "o", "pm")
+	run(t, filepath.Dir(notGit), "init", "-q", inCache)
+	if err := SetPMConfig(inCache); err == nil {
+		t.Error("a clone in the repo cache was accepted")
+	}
 	// A link elsewhere that leads into the stacks is judged by where it leads.
 	link := filepath.Join(t.TempDir(), "pm-config")
 	if err := os.Symlink(inStacks, link); err != nil {

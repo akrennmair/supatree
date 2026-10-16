@@ -68,7 +68,8 @@ func checkPMConfig(cfg *Config, dir string) (string, error) {
 	if !isGitRepo(real) {
 		return "", fmt.Errorf("%s is not a git repository — the PM config is versioned, so it has to be one", abs)
 	}
-	writable := []string{StacksDir(), cfg.ResolveTreesBase(), StateRoot(), CacheDir()}
+	// ReposDir: tree agents commit in the base clones there.
+	writable := []string{StacksDir(), cfg.ResolveTreesBase(), StateRoot(), CacheDir(), ReposDir()}
 	for _, s := range cfg.Stacks {
 		if s.Path != "" {
 			writable = append(writable, s.Path)
