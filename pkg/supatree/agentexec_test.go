@@ -127,7 +127,7 @@ func TestFailedOpenLeavesNoRecord(t *testing.T) {
 	inst := &Instance{Name: "lima", Root: t.TempDir(), Model: defaultModelKey}
 
 	for _, name := range []string{"scout", MainAgent} {
-		if _, err := OpenRootAgent(inst, cfg, ws, "20%", name, "", nil); err == nil {
+		if _, err := OpenRootAgent(inst, cfg, ws, "20%", name, OpenOptions{}, nil); err == nil {
 			t.Fatalf("opening %s under a broken profile succeeded", name)
 		}
 	}
@@ -138,7 +138,7 @@ func TestFailedOpenLeavesNoRecord(t *testing.T) {
 	if _, _, err := EnsureAgent(inst.Root, inst.Name, "queued", defaultModelKey, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := OpenRootAgent(inst, cfg, ws, "20%", "queued", "", nil); err == nil {
+	if _, err := OpenRootAgent(inst, cfg, ws, "20%", "queued", OpenOptions{}, nil); err == nil {
 		t.Fatal("opening queued under a broken profile succeeded")
 	}
 	if agents, _ := LoadAgents(inst.Root); FindAgent(agents, "queued") == nil {
@@ -154,7 +154,7 @@ func TestFailedOpenLeavesNoRecord(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-		_, err := OpenRootAgent(inst, cfg, ws, "20%", "slow", "", nil)
+		_, err := OpenRootAgent(inst, cfg, ws, "20%", "slow", OpenOptions{}, nil)
 		if !LaunchUncertain(err) {
 			t.Fatalf("err = %v, want a LaunchError", err)
 		}

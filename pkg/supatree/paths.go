@@ -298,6 +298,12 @@ func LaunchPath() string {
 	return filepath.Join(PMDir(), "launch.jsonl")
 }
 
+// LaunchResultsDir holds the watcher's answers to launch requests, one file per
+// request ID. In PMDir for the same reason as the queue.
+func LaunchResultsDir() string {
+	return filepath.Join(PMDir(), "launched")
+}
+
 // LaunchLockPath serializes appends to and drains of the launch queue.
 func LaunchLockPath() string {
 	return LaunchPath() + ".lock"

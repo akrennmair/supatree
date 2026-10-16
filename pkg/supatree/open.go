@@ -23,25 +23,40 @@ func TabName(tree, agent string) string {
 	return tree + ":" + agent
 }
 
+// OpenOptions are the ways a root-agent open can differ.
+type OpenOptions struct {
+	Model string // model override
+	// Wake is set for a launch nobody at the keyboard asked for (the watcher,
+	// on a PM's start_agent). An agent that is already running is then woken
+	// in place — WakePrompt typed into its pane when mail waits for it —
+	// rather than focused: nobody is there to look at the tab, and the agent
+	// would otherwise not read its brief until someone typed.
+	Wake bool
+}
+
 // OpenRootAgent opens or resumes a named agent running at the supatree root
 // (nono --allow the whole tree). Several agents share the root but resume
 // independently via their session IDs. Warnings that do not stop the open go
 // to startupW.
-func OpenRootAgent(inst *Instance, c *Config, ws zellij.Workspace, sidebarWidth, agentName, modelOverride string, startupW io.Writer) (opened bool, err error) {
+func OpenRootAgent(inst *Instance, c *Config, ws zellij.Workspace, sidebarWidth, agentName string, opts OpenOptions, startupW io.Writer) (outcome LaunchOutcome, err error) {
 	if agentName == "" {
 		agentName = MainAgent
 	}
+	tab := TabName(inst.Name, agentName)
+	if opts.Wake && zellij.TabLiveness("", tab) == zellij.LivenessAlive {
+		return wakeAgent(inst.Root, tab, agentName), nil
+	}
 	// nono refuses a grant on a path that does not exist.
 	if err := EnsureLayout(); err != nil {
-		return false, err
+		return LaunchFailed, err
 	}
 	key := inst.Model
-	if modelOverride != "" {
-		key = modelOverride
+	if opts.Model != "" {
+		key = opts.Model
 	}
 	agent, created, err := EnsureAgent(inst.Root, inst.Name, agentName, key, time.Now())
 	if err != nil {
-		return false, err
+		return LaunchFailed, err
 	}
 	// A record this call made is kept only if the agent launches: one left
 	// behind by a refused launch (nono rejecting its profile, say) would be
@@ -64,10 +79,10 @@ func OpenRootAgent(inst *Instance, c *Config, ws zellij.Workspace, sidebarWidth,
 	resume := sandbox.SessionExists(inst.Root, agent.SessionID)
 	model, err := c.Model(agent.Model)
 	if err != nil {
-		return false, err
+		return LaunchFailed, err
 	}
 	if err := NonoPreflight(model.NonoProfile); err != nil {
-		return false, err
+		return LaunchFailed, err
 	}
 	nonoArgs := sandbox.BuildGrantedAgentNonoArgs(model, TreeGrants(c, inst), inst.Root, agent.SessionID, agent.Address, resume)
 	// Mail waiting means somebody briefed this agent before it was running —
@@ -78,7 +93,37 @@ func OpenRootAgent(inst *Instance, c *Config, ws zellij.Workspace, sidebarWidth,
 		nonoArgs = sandbox.AppendPrompt(nonoArgs, model, KickoffPrompt)
 	}
 	env := withAgentExec(inst.AgentEnv(agentName))
-	return launch(ws.OpenOrFocusTab(TabName(inst.Name, agentName), inst.Root, sidebarWidth, nonoArgs, env))
+	action, err := ws.OpenOrFocusTabAction(tab, inst.Root, sidebarWidth, nonoArgs, env)
+	if err != nil {
+		return LaunchFailed, &LaunchError{Err: err}
+	}
+	if action != zellij.TabFocused {
+		return LaunchStarted, nil
+	}
+	// Focused: the agent was running after all (its liveness was unknown
+	// above, or this is not a wake). Mail for it is still unread.
+	if opts.Wake {
+		return wakeAgent(inst.Root, tab, agentName), nil
+	}
+	return LaunchRunning, nil
+}
+
+// wakeAgent hands a running agent the mail waiting for it, by typing
+// WakePrompt into its pane. With no mail there is nothing to wake it for, and
+// with no agent pane to be sure of, nothing is typed: a mailed brief the agent
+// reads on its next turn is better than text typed into the wrong terminal.
+func wakeAgent(root, tab, agent string) LaunchOutcome {
+	if !HasMail(root, agent) {
+		return LaunchRunning
+	}
+	pane, ok, err := zellij.AgentPane("", tab)
+	if err != nil || !ok {
+		return LaunchRunning
+	}
+	if err := zellij.SubmitToPane("", pane.ID, WakePrompt); err != nil {
+		return LaunchRunning
+	}
+	return LaunchWoken
 }
 
 // LaunchError is a failure in opening an agent's tab. Zellij may have opened
@@ -97,6 +142,7 @@ func LaunchUncertain(err error) bool {
 }
 
 // launch passes OpenOrFocusTab's result on, marking a failure as a LaunchError.
+// (OpenRootAgent wraps its own; this is for the opens that report a bool.)
 func launch(opened bool, err error) (bool, error) {
 	if err != nil {
 		return opened, &LaunchError{Err: err}

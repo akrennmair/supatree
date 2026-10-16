@@ -34,6 +34,12 @@ type Config struct {
 	// DefaultWatchInterval. The GitHub fetch behind it stays gated on
 	// PRStaleAge, so shortening this does not spend more quota.
 	WatchInterval string `yaml:"watch_interval,omitempty"`
+	// MaxRunningAgents caps how many tree agents the watcher lets be busy at
+	// once; launches past it wait in the queue, in order, and start as busy
+	// agents go idle. Unset uses DefaultMaxRunningAgents; 0 is no cap. A PM
+	// starting ten reviews in one turn — each running full test suites — made
+	// the machine unusable for forty minutes (#1).
+	MaxRunningAgents *int `yaml:"max_running_agents,omitempty"`
 	// DefaultAutonomy governs supatrees whose meta.yml says nothing, and — the
 	// reason it has to exist — actions with no tree to carry a level yet, such
 	// as creating one.
@@ -221,6 +227,17 @@ const DefaultWatchInterval = 30 * time.Second
 // ResolveWatchInterval returns the configured watch interval or the default. An
 // unparseable or absurdly short value falls back rather than failing: this is a
 // daemon, and a typo in a config file must not stop it polling.
+// DefaultMaxRunningAgents is the busy-agent cap when the config sets none.
+const DefaultMaxRunningAgents = 3
+
+// ResolveMaxRunningAgents is the busy-agent cap; 0 means none.
+func (c *Config) ResolveMaxRunningAgents() int {
+	if c.MaxRunningAgents == nil || *c.MaxRunningAgents < 0 {
+		return DefaultMaxRunningAgents
+	}
+	return *c.MaxRunningAgents
+}
+
 func (c *Config) ResolveWatchInterval() time.Duration {
 	d, err := time.ParseDuration(c.WatchInterval)
 	if err != nil || d < 5*time.Second {

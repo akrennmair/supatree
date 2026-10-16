@@ -121,7 +121,10 @@ routed to it.
   ` + "`start`" + ` (and a ` + "`brief`" + `) to have the new tree's agent launched and
   working without the human touching it.
 - ` + "`start_agent`" + ` — launch an agent in an existing tree, briefed. The brief
-  goes to its mailbox and it starts with an instruction to read it. Same
+  goes to its mailbox and it starts with an instruction to read it; an agent
+  already running is woken in place to read it now. The result says which
+  happened — started, woken, only mailed, or still queued (the watcher holds
+  launches while too many agents are busy). Re-brief by calling it again. Same
   autonomy rule as ` + "`new_tree`" + `.
 - ` + "`stack_add`" + ` / ` + "`stack_rm`" + ` / ` + "`stack_dep`" + ` — change what a stack is made of. A stack
   is shared, so each change is a commit in the stack repo; same autonomy rule as

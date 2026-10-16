@@ -48,9 +48,14 @@ func openRootAgent(inst *supatree.Instance) error {
 	if openBackground {
 		prev = zellij.FocusedTab("")
 	}
-	_, err := supatree.OpenRootAgent(inst, stCfg, supatreeWorkspace(), stCfg.ResolveSidebarWidth(), openAgent, openModel, os.Stderr)
+	outcome, err := supatree.OpenRootAgent(inst, stCfg, supatreeWorkspace(), stCfg.ResolveSidebarWidth(), openAgent,
+		supatree.OpenOptions{Model: openModel, Wake: openBackground}, os.Stderr)
 	if err == nil && prev != "" && prev != supatree.TabName(inst.Name, openAgent) {
 		_ = zellij.GoToTab(prev)
+	}
+	if openBackground {
+		// The watcher reads this line to tell the PM what the launch came to.
+		fmt.Println(supatree.OpenOutcomePrefix + string(outcome))
 	}
 	return err
 }

@@ -154,3 +154,19 @@ func TestRemoveAgent(t *testing.T) {
 		t.Fatalf("agents after removal = %v, want main,tester", names)
 	}
 }
+
+// An address is reported only for a model that launches its agent under it.
+func TestBusAddressNeedsNameArgs(t *testing.T) {
+	a := Agent{Name: MainAgent, Model: "claude", Address: "st-canberra-main"}
+	named := &Config{Models: map[string]config.Model{"claude": {Binary: "claude", AgentNameArgs: []string{"--name", "{agent_name}"}}}}
+	if got := busAddress(named, a); got != a.Address {
+		t.Errorf("busAddress with name args = %q, want %q", got, a.Address)
+	}
+	unnamed := &Config{Models: map[string]config.Model{"claude": {Binary: "claude"}}}
+	if got := busAddress(unnamed, a); got != "" {
+		t.Errorf("busAddress without name args = %q, want none: the agent never ran under it", got)
+	}
+	if got := busAddress(nil, a); got != "" {
+		t.Errorf("busAddress with no config = %q, want none", got)
+	}
+}

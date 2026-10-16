@@ -232,7 +232,7 @@ func MCPServer(version string) *mcp.Server {
 			},
 			{
 				Name:        "start_agent",
-				Description: "PM: launch an agent in an existing supatree, in the background, briefed and working. The brief is left in its mailbox and the agent is started with an instruction to read it; if the agent is already running, it gets the brief on its next turn instead. Same autonomy rule as new_tree.",
+				Description: "PM: launch an agent in an existing supatree, in the background, briefed and working. The brief is left in its mailbox and the agent is started with an instruction to read it; if the agent is already running and idle, it is woken in place to read it. The result says whether the agent was started, woken, only mailed, or is still queued (launches wait while max_running_agents agents are busy). Same autonomy rule as new_tree.",
 				InputSchema: mcp.ObjectSchema(map[string]any{
 					argTree:      mcp.StringProp("Supatree name"),
 					"agent":      mcp.StringProp("Agent name (default main)"),
@@ -904,6 +904,7 @@ func handleAgents(args map[string]any) (string, bool) {
 		return "no agents have been launched in this supatree yet", false
 	}
 	me := os.Getenv("SUPATREE_AGENT")
+	cfg, _ := Load()
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "Agents in %s:\n", inst.Name)
@@ -916,8 +917,8 @@ func handleAgents(args map[string]any) (string, bool) {
 		// only exists for a model whose CLI has a message bus; everything else
 		// is reachable by mailbox alone, which lands on the agent's next turn.
 		reach := "mailbox (next turn)"
-		if a.Address != "" {
-			reach = "bus " + a.Address
+		if addr := busAddress(cfg, a); addr != "" {
+			reach = "bus " + addr
 		}
 		pending := ""
 		if msgs, err := Mail(inst.Root, a.Name); err == nil && len(msgs) > 0 {
@@ -926,6 +927,22 @@ func handleAgents(args map[string]any) (string, bool) {
 		fmt.Fprintf(&b, "%s %-16s %-10s %s%s\n", marker, a.Name, a.Model, reach, pending)
 	}
 	return b.String(), false
+}
+
+// busAddress is the bus name an agent can be reached at, or "" when there is
+// none to give. The address is recorded at registration, but the agent only
+// runs under it when its model passes a name at launch: a config saved before
+// agent_name_args existed launched every agent under a name of Claude's own
+// choosing, and an address reported for it was a name nothing answered to (#15).
+func busAddress(cfg *Config, a Agent) string {
+	if a.Address == "" || cfg == nil {
+		return ""
+	}
+	m, err := cfg.Model(a.Model)
+	if err != nil || len(m.AgentNameArgs) == 0 {
+		return ""
+	}
+	return a.Address
 }
 
 func handleMessageAgent(args map[string]any) (string, bool) {
@@ -966,8 +983,9 @@ func handleMessageAgent(args map[string]any) (string, bool) {
 	if err := Deliver(inst.Root, to, from, text); err != nil {
 		return err.Error(), true
 	}
-	if target.Address != "" {
-		return fmt.Sprintf("delivered to %s's mailbox. It is idle until its next turn — to reach it now, message %s on your session bus.", to, target.Address), false
+	cfg, _ := Load()
+	if addr := busAddress(cfg, *target); addr != "" {
+		return fmt.Sprintf("delivered to %s's mailbox. It is idle until its next turn — to reach it now, message %s on your session bus.", to, addr), false
 	}
 	return fmt.Sprintf("delivered to %s's mailbox; it will see this on its next turn.", to), false
 }
@@ -1328,11 +1346,43 @@ func startAgent(inst *Instance, agent, brief string) (string, error) {
 		return "", fmt.Errorf("nothing for %s to do: pass a brief", agent)
 	}
 	req := LaunchRequest{Tree: inst.Name, Agent: agent, Session: os.Getenv("ZELLIJ_SESSION_NAME"), From: currentPMAgentID()}
-	if err := QueueLaunch(req); err != nil {
+	id, err := QueueLaunch(req)
+	if err != nil {
 		return "", fmt.Errorf("queue launch: %w", err)
 	}
-	return fmt.Sprintf("briefed %s and queued it to start in tab %q. The watcher opens it in the background within a few seconds and returns focus to wherever the human was; if nothing appears, `supatree watch` is not running. The agent reports back with message_agent, which reaches you through `requests`.",
-		agent, TabName(inst.Name, agent)), nil
+	// Wait for the watcher's answer: "queued" covered three different
+	// outcomes, and one of them — an idle agent mailed and never woken — looked
+	// exactly like success (#15).
+	res, ok := WaitLaunchResult(id, launchWait)
+	return launchReport(inst, agent, res, ok), nil
+}
+
+// launchWait is how long start_agent waits to hear what the watcher did. The
+// watcher looks every two seconds; a launch past this is still queued.
+var launchWait = 20 * time.Second
+
+func launchReport(inst *Instance, agent string, res LaunchResult, answered bool) string {
+	tab := TabName(inst.Name, agent)
+	const back = " The agent reports back with message_agent, which reaches you through `requests`."
+	if !answered {
+		waiting := ""
+		if n := QueuedLaunches(); n > 0 {
+			waiting = fmt.Sprintf(" %d launch(es) are queued — the watcher holds them while too many agents are busy, and starts each as a slot frees.", n)
+		}
+		return fmt.Sprintf("briefed %s and queued it to start in tab %q, but the watcher has not picked it up yet.%s If it never starts, `supatree watch` is not running.%s",
+			agent, tab, waiting, back)
+	}
+	switch res.Outcome {
+	case LaunchStarted:
+		return fmt.Sprintf("briefed %s and started it in tab %q, in the background (focus stays where the human was).%s", agent, tab, back)
+	case LaunchWoken:
+		return fmt.Sprintf("briefed %s; it was already running, so it was woken in place to read the brief now.%s", agent, back)
+	case LaunchRunning:
+		return fmt.Sprintf("briefed %s, but it is already running and could not be woken (no agent pane to type into), so it reads the brief on its next turn. If it stays idle, check `agents` for unread mail and message its bus address.", agent)
+	case LaunchFailed:
+		return fmt.Sprintf("briefed %s, but the launch failed: %s. The brief is still in its mailbox; call start_agent again once that is fixed.", agent, res.Detail)
+	}
+	return fmt.Sprintf("briefed %s; the watcher answered %q.%s", agent, res.Outcome, back)
 }
 
 func handleRemoveTree(args map[string]any) (string, bool) {
