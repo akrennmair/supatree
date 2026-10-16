@@ -142,7 +142,7 @@ func MCPServer(version string) *mcp.Server {
 			},
 			{
 				Name:        "agents",
-				Description: "List the agents attached to a supatree: their names, models, bus addresses and whether each is reachable now. Use an address with your own message-bus tool to reach one directly. PMs are not listed: reach them with `message_agent` as `pm` (the top PM) or `pm-<name>`.",
+				Description: "List the agents attached to a supatree: their names, models, bus addresses and whether each is reachable now. Use an address with your own message-bus tool to reach one directly. It also lists the PMs, with the name `message_agent` reaches each by.",
 				InputSchema: mcp.ObjectSchema(map[string]any{
 					argTree: mcp.StringProp("Supatree name (omit inside a supatree to mean your own)"),
 				}, nil),
@@ -956,7 +956,7 @@ func handleAgents(args map[string]any) (string, bool) {
 		return err.Error(), true
 	}
 	if len(agents) == 0 {
-		return "no agents have been launched in this supatree yet\n" + pmReachHint, false
+		return "no agents have been launched in this supatree yet\n\n" + pmSection(), false
 	}
 	me := os.Getenv("SUPATREE_AGENT")
 	cfg, _ := Load()
@@ -981,14 +981,33 @@ func handleAgents(args map[string]any) (string, bool) {
 		}
 		fmt.Fprintf(&b, "%s %-16s %-10s %s%s\n", marker, a.Name, a.Model, reach, pending)
 	}
-	b.WriteString(pmReachHint)
+	b.WriteString("\n" + pmSection())
 	return b.String(), false
 }
 
-// pmReachHint ends every agents listing. PMs live in no tree's agents.yml, so
-// a tree agent looking for one by name finds nothing here and would otherwise
-// go hunting for a CLI path its sandbox does not grant.
-const pmReachHint = "PMs are not listed here: message_agent reaches the top PM as `pm` and any other as `pm-<name>`.\n"
+// pmSection ends every agents listing. PMs live in no tree's agents.yml, so
+// without it a tree agent looking for one by name finds nothing and goes
+// hunting for a CLI path its sandbox does not grant. The names come from the
+// published roster; an agent launched before there was one still gets the
+// address pattern.
+func pmSection() string {
+	const how = "message_agent reaches a PM by its agent name: `pm` is the top PM, `pm-<name>` any other.\n"
+	roster, err := ReadPMRoster()
+	if err != nil || len(roster) == 0 {
+		return "PMs (not readable here):\n  " + how
+	}
+	var b strings.Builder
+	b.WriteString("PMs:\n")
+	for _, p := range roster {
+		top := ""
+		if p.Top {
+			top = "  (top)"
+		}
+		fmt.Fprintf(&b, "  %-16s message_agent %s%s\n", p.Name, p.Agent, top)
+	}
+	b.WriteString("  " + how)
+	return b.String()
+}
 
 // busAddress is the bus name an agent can be reached at, or "" when there is
 // none to give. The address is recorded at registration, but the agent only

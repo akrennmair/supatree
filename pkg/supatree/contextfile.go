@@ -44,6 +44,7 @@ Create and merge PRs in dependency order:
 - Branches share the slug ` + "`st/{{.Slug}}/…`" + `. Before opening any PR, give the slug a meaningful name with the ` + "`rename_branches`" + ` MCP tool (or ` + "`supatree rename-branch`" + `).
 - Open PRs with the supatree MCP tools (` + "`create_pr`" + ` / ` + "`create_prs`" + `), never with bare ` + "`gh pr create`" + ` — the tools enforce dependency order and cross-link the PRs.
 - To add or remove a repo, edit ` + "`supatree.yml`" + ` (` + "`members:`" + ` maps an alias to the repo's git URL) and run the ` + "`sync`" + ` tool (or ` + "`supatree sync`" + `). A member added that way cannot be committed to from an agent already running here until that agent restarts.
+- The stack's ` + "`scripts/setup`" + `, if present, runs once for every new tree made from it, before any agent starts. It cannot prompt: stdin is closed.
 - **Asked to review someone else's pull requests?** This is the wrong tree — its
   branches are yours and none of them contains their change. Tell the human to
   run ` + "`supatree review <pr-urls…>`" + `, which checks the pull requests out
@@ -63,8 +64,11 @@ is capped so that starting a session stays cheap.
 {{end}}## Other agents
 
 Several agents can share this supatree. ` + "`agents`" + ` lists them with their bus
-addresses; ` + "`message_agent`" + ` leaves one a message. Agent ` + "`pm`" + ` reaches
-the PM.
+addresses, and the PMs too; ` + "`message_agent`" + ` leaves any of them a message. A
+PM is addressed as ` + "`pm`" + ` (the top PM) or ` + "`pm-<name>`" + `, and the watcher
+moves the message into that PM's requests within seconds. Don't use
+` + "`supatree request`" + ` or ` + "`supatree pm`" + ` from here: they need PM state this
+sandbox does not grant.
 
 **Check ` + "`inbox`" + ` at the start of each turn.** Messages are delivered to a
 mailbox rather than interrupting you, so nothing tells you one has arrived —
@@ -142,7 +146,9 @@ version:
 
 **Check ` + "`inbox`" + ` at the start of each turn.** The PM briefs you there —
 often before you were even started — and nothing else tells you a message has
-arrived. To report back to the PM, ` + "`message_agent`" + ` with agent ` + "`pm`" + `.
+arrived. To report back, ` + "`message_agent`" + ` the PM your brief came from: its
+` + "`from`" + ` is ` + "`pm`" + ` for the top PM or ` + "`pm-<name>`" + ` for another, and
+` + "`agents`" + ` lists them.
 `))
 
 // InfoData is the template context for info.md.
@@ -212,33 +218,20 @@ func mergeOrderLine(inst *Instance) string {
 }
 
 // scaffoldAgentsMD is the AGENTS.md written into a freshly scaffolded stack
-// repo. It is tracked and hand-editable; supatree never regenerates it.
+// repo. It is tracked and hand-editable, so it holds only a pointer: supatree's
+// own conventions live in the generated info.md, which follows the binary,
+// rather than in a copy every stack keeps forever (see agentsmd.go for the
+// copies older stacks already have).
 const scaffoldAgentsMD = `# Supatree agent guide
 
 This is a supatree: a set of git worktrees, one per repo, for a single
-cross-repo issue. When opened, you run at the supatree root and each member repo
-is checked out under ` + "`repos/<alias>/`" + `.
+cross-repo issue. Each member repo is checked out under ` + "`repos/<alias>/`" + `.
 
-Read ` + "`.supatree/info.md`" + ` for the current member list, branches, and merge order.
+**Read ` + "`.supatree/info.md`" + ` first.** It is generated and kept current: the
+members, branches and merge order, and supatree's conventions — branch names,
+pull requests, syncing, and reaching other agents and PMs.
 
-## Conventions
-
-- Commit in each repo's worktree separately (` + "`cd repos/<alias>`" + `).
-- Give the shared branch slug a meaningful name before any PR:
-  ` + "`rename_branches`" + ` MCP tool, or ` + "`supatree rename-branch <slug>`" + `.
-- Open PRs with the ` + "`create_pr`" + ` / ` + "`create_prs`" + ` MCP tools (dependency-ordered,
-  cross-linked) — not with bare ` + "`gh pr create`" + `.
-- To change the repo set, edit ` + "`supatree.yml`" + ` — ` + "`members:`" + ` maps each alias
-  to the repo's git URL — then run the ` + "`sync`" + ` tool.
-- ` + "`scripts/setup`" + `, if present, runs once for every new tree made from this
-  stack, before any agent starts. It cannot prompt: stdin is closed.
-- To reach a PM, use ` + "`message_agent`" + ` with agent ` + "`pm`" + ` (the top PM) or
-  ` + "`pm-<name>`" + ` (a named one). PMs are not listed by ` + "`agents`" + `; the watcher
-  moves the message into that PM's ` + "`requests`" + ` within seconds. Don't use
-  ` + "`supatree request`" + ` or ` + "`supatree pm`" + ` from a tree: they need PM state the
-  tree sandbox does not grant.
-
-Add your issue-specific instructions below.
+` + agentsMDTail + `
 `
 
 // scaffoldGitignore keeps the gitignored per-tree working files out of the

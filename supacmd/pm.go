@@ -89,7 +89,20 @@ var pmLsCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		pms, err := supatree.LoadPMs()
 		if err != nil {
-			return err
+			// Inside a tree's sandbox the registry is out of reach, but the
+			// roster published from it is not.
+			roster, rerr := supatree.ReadPMRoster()
+			if rerr != nil {
+				return err
+			}
+			for _, p := range roster {
+				top := ""
+				if p.Top {
+					top = "  (top)"
+				}
+				fmt.Printf("%-16s %s%s\n", p.Name, p.Agent, top)
+			}
+			return nil
 		}
 		for i, p := range pms {
 			top := ""

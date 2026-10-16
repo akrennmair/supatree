@@ -1,6 +1,7 @@
 package supatree
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -163,7 +164,54 @@ func savePMs(pms []PM) error {
 	if err != nil {
 		return fmt.Errorf("marshal PMs: %w", err)
 	}
-	return writeFileAtomic(PMsPath(), data)
+	if err := writeFileAtomic(PMsPath(), data); err != nil {
+		return err
+	}
+	return writeRoster(pms)
+}
+
+// RosterPM is one PM as tree agents see it: enough to address it, and nothing
+// of its session.
+type RosterPM struct {
+	Name  string `json:"name"`
+	Agent string `json:"agent"` // what message_agent takes
+	Top   bool   `json:"top,omitempty"`
+}
+
+func writeRoster(pms []PM) error {
+	if err := os.MkdirAll(RosterDir(), 0755); err != nil {
+		return fmt.Errorf("create roster dir: %w", err)
+	}
+	roster := make([]RosterPM, len(pms))
+	for i, p := range pms {
+		roster[i] = RosterPM{Name: p.Name, Agent: p.AgentID(), Top: i == 0}
+	}
+	return writeJSONAtomic(PMRosterPath(), roster)
+}
+
+// PublishPMRoster refreshes the roster from the registry. The registry's own
+// writes keep it current; this is for a launch, so a roster that predates the
+// roster's existence, or was deleted, is there before an agent asks for it.
+func PublishPMRoster() error {
+	pms, err := LoadPMs()
+	if err != nil {
+		return err
+	}
+	return writeRoster(pms)
+}
+
+// ReadPMRoster returns the published PMs, top first. Unlike LoadPMs it works
+// inside a tree's sandbox.
+func ReadPMRoster() ([]RosterPM, error) {
+	data, err := os.ReadFile(PMRosterPath())
+	if err != nil {
+		return nil, err
+	}
+	var roster []RosterPM
+	if err := json.Unmarshal(data, &roster); err != nil {
+		return nil, fmt.Errorf("parse PM roster: %w", err)
+	}
+	return roster, nil
 }
 
 func writeFileAtomic(path string, data []byte) error {
