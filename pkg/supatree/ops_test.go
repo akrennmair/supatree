@@ -76,6 +76,10 @@ func TestOpAuthorization(t *testing.T) {
 		{treeDir, Op{Kind: OpSync, Tree: treeA}, false},
 		{treeDir, Op{Kind: OpNew, Stack: "s"}, true},
 		{treeDir, Op{Kind: OpRemove, Tree: treeA}, true},
+		{treeDir, Op{Kind: OpReviewAdd, Tree: treeA}, false},
+		{PMDir(), Op{Kind: OpReviewAdd, Tree: treeA}, false},
+		{treeDir, Op{Kind: OpStack, Stack: "s"}, true},
+		{treeDir, Op{Kind: OpStop, Tree: treeA}, true},
 	}
 	for _, tc := range cases {
 		err := c.authorizeOp(ClaimedOp{Dir: tc.dir, Op: tc.op})
@@ -91,6 +95,9 @@ func TestOpAuthorization(t *testing.T) {
 	}
 	if err := c.authorizeOp(ClaimedOp{Dir: StateDir(other), Op: Op{Kind: OpSync, Tree: treeA}}); err == nil {
 		t.Error("a tree was allowed to sync a different tree")
+	}
+	if err := c.authorizeOp(ClaimedOp{Dir: StateDir(other), Op: Op{Kind: OpReviewAdd, Tree: treeA}}); err == nil {
+		t.Error("a tree was allowed to add pull requests to a different tree")
 	}
 }
 

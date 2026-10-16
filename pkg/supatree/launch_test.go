@@ -99,6 +99,7 @@ func TestForwardPMMail(t *testing.T) {
 const (
 	sessionMain   = "st-main"
 	agentReviewer = "reviewer"
+	pmReviews     = "reviews"
 )
 
 // noLaunchWait stops startAgent waiting on a watcher no test runs.

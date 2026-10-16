@@ -30,6 +30,8 @@ type PM struct {
 	Model     string    `yaml:"model,omitempty"`
 	SessionID string    `yaml:"session_id,omitempty"`
 	CreatedAt time.Time `yaml:"created_at"`
+	// ConfigAt is the PM config repo commit this PM was last launched with.
+	ConfigAt string `yaml:"config_at,omitempty"`
 }
 
 func (p PM) isDefault() bool { return p.Name == DefaultPMName }

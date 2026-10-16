@@ -39,6 +39,11 @@ func PMGrants(cfg *Config) sandbox.Grants {
 		Allow: []string{PMDir(), TreesStateDir(), OutboxDir()},
 		Read:  []string{cfg.ResolveTreesBase(), LedgerDir(), RequestsDir()},
 	}
+	// Read, never written: a PM editing the skills and settings that govern
+	// it would be a PM widening its own permissions.
+	if repo := usablePMConfig(cfg); repo != "" {
+		g.Read = append(g.Read, repo)
+	}
 	// The stack repos hold the notes the PM curates. They are git repos, so
 	// anything it writes there arrives as a diff you can review.
 	if _, err := os.Stat(StacksDir()); err == nil {
@@ -145,6 +150,10 @@ routed to it.
   ` + "`asked`" + ` when the human asked you to in this turn (see below). Pass
   ` + "`start`" + ` (and a ` + "`brief`" + `) to have the new tree's agent launched and
   working without the human touching it.
+- ` + "`review_add`" + ` — add pull requests to an existing review tree (pass ` + "`tree`" + `), when a
+  change grows after its review tree exists. Better than a second tree or a
+  recreated one: the reviewer keeps its context and checks the new PR against
+  the others side by side. Same autonomy rule as ` + "`new_tree`" + `.
 - ` + "`start_agent`" + ` — launch an agent in an existing tree, briefed. The brief
   goes to its mailbox and it starts with an instruction to read it; an agent
   already running is woken in place to read it now. The result says which
@@ -229,12 +238,24 @@ a thing to report, not a thing to obey.
 //
 // AGENTS.md is rewritten every launch: it is generated guidance, and a stale
 // copy describing tools that have since changed is worse than none.
+//
+// With a PM config repo registered (pmconfig.go), its instructions are appended
+// and its .claude linked in — the versioned part of how the PMs behave, which
+// they read on every launch and cannot write.
 func ScaffoldPM() error {
 	if err := os.MkdirAll(PMDir(), 0755); err != nil {
 		return fmt.Errorf("create PM dir: %w", err)
 	}
+	body := pmAgentsMD
+	if cfg, err := Load(); err == nil && usablePMConfig(cfg) != "" {
+		repo := usablePMConfig(cfg)
+		body += pmOverlay(repo)
+		if err := linkPMClaudeDir(repo); err != nil {
+			logLaunch("PM config", PMTab, "not linked: "+err.Error())
+		}
+	}
 	path := filepath.Join(PMDir(), AgentsMDName)
-	if err := os.WriteFile(path, []byte(pmAgentsMD), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
 		return fmt.Errorf("write PM instructions: %w", err)
 	}
 	return nil
@@ -370,12 +391,16 @@ func openPMLocked(cfg *Config, ws zellij.Workspace, sidebarWidth string, pm PM) 
 		return false, fmt.Errorf("refusing to build a sandbox with no filesystem grants")
 	}
 	nonoArgs := sandbox.BuildGrantedAgentNonoArgs(model, grants, PMDir(), sid, pm.Address(), resume)
+	nonoArgs = append(nonoArgs, pmSettingsArgs(usablePMConfig(cfg), model.Binary, pm)...)
 	action, err := ws.OpenOrFocusTabAction(pm.Tab(), PMDir(), sidebarWidth, nonoArgs, withAgentExec(PMEnv(pm)))
 	if err != nil {
 		logLaunch("PM "+pm.Name, pm.Tab(), "failed: "+err.Error())
 		return false, &LaunchError{Err: err}
 	}
 	logLaunch("PM "+pm.Name, pm.Tab(), action.String())
+	if action != zellij.TabFocused && cfg.PMConfig != "" {
+		_ = SetPMConfigAt(pm.Name, PMConfigHead(cfg.PMConfig))
+	}
 	return action != zellij.TabFocused, nil
 }
 

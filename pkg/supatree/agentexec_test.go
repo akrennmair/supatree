@@ -310,7 +310,7 @@ func TestOrphans(t *testing.T) {
 		{PID: 1, Tree: treeLima, Agent: MainAgent, Session: sessionMain},
 		{PID: 2, Tree: "gone", Agent: MainAgent, Session: sessionMain},
 		{PID: 3, PM: DefaultPMName, Session: sessionMain},
-		{PID: 4, PM: "reviews", Session: sessionMain},
+		{PID: 4, PM: pmReviews, Session: sessionMain},
 		{PID: 5, Tree: "x", Agent: MainAgent, Session: "st-unreadable"},
 	}
 	tabs := map[string]map[string]bool{sessionMain: {treeLima: true, PMTab: true}}

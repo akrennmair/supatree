@@ -52,8 +52,9 @@ func New(c *Config, opts CreateOptions) (*Instance, *SyncReport, error) {
 	if err := git.RequireSafeRepo(stack.Path); err != nil {
 		return nil, nil, err
 	}
-	// Create the meta-worktree (checks out the stack's tracked files).
-	if _, err := git.CreateWorktree(stack.Path, root, "st/"+name); err != nil {
+	// Create the meta-worktree (checks out the stack's tracked files), from
+	// the pinned origin when there is one (createWorktree).
+	if _, err := createWorktree(stack.Path, root, "st/"+name, stack.Origin); err != nil {
 		return nil, nil, fmt.Errorf("create supatree worktree: %w", err)
 	}
 

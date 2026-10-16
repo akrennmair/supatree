@@ -29,12 +29,13 @@ import (
 type OpKind string
 
 const (
-	OpNew    OpKind = "new"    // create a tree from a stack
-	OpReview OpKind = "review" // create a review tree for pull requests
-	OpRemove OpKind = "remove" // remove a tree
-	OpSync   OpKind = "sync"   // reconcile a tree's members with its spec
-	OpStop   OpKind = "stop"   // stop agent processes (a tree's, or orphans)
-	OpStack  OpKind = "stack"  // edit a stack: add, rm or dep a member
+	OpNew       OpKind = "new"        // create a tree from a stack
+	OpReview    OpKind = "review"     // create a review tree for pull requests
+	OpRemove    OpKind = "remove"     // remove a tree
+	OpSync      OpKind = "sync"       // reconcile a tree's members with its spec
+	OpStop      OpKind = "stop"       // stop agent processes (a tree's, or orphans)
+	OpStack     OpKind = "stack"      // edit a stack: add, rm or dep a member
+	OpReviewAdd OpKind = "review-add" // add pull requests to a review tree
 )
 
 // Stack edit actions, for OpStack.
@@ -284,6 +285,8 @@ func (c *Config) RunOp(claimed ClaimedOp, hooks OpHooks) OpResult {
 		err = runStop(op, &res)
 	case OpStack:
 		err = c.runStackEdit(op, &res)
+	case OpReviewAdd:
+		err = c.runReviewAdd(op, &res, filepath.Clean(claimed.Dir) != PMDir())
 	default:
 		err = fmt.Errorf("unknown operation %q", op.Kind)
 	}
@@ -299,7 +302,7 @@ func (c *Config) authorizeOp(claimed ClaimedOp) error {
 	if filepath.Clean(claimed.Dir) == PMDir() {
 		return nil
 	}
-	if claimed.Op.Kind != OpSync {
+	if claimed.Op.Kind != OpSync && claimed.Op.Kind != OpReviewAdd {
 		return fmt.Errorf("%s may only be requested by the PM", claimed.Op.Kind)
 	}
 	inst, err := Get(c, claimed.Op.Tree)
@@ -307,9 +310,50 @@ func (c *Config) authorizeOp(claimed ClaimedOp) error {
 		return err
 	}
 	if filepath.Clean(StateDir(inst.Root)) != filepath.Clean(claimed.Dir) {
-		return fmt.Errorf("a tree may only sync itself")
+		return fmt.Errorf("a tree may only %s itself", claimed.Op.Kind)
 	}
 	return nil
+}
+
+// runReviewAdd adds pull requests to a review tree, for its own agent or the
+// PM. In the watcher: a new member may need a clone, and resolving a PR needs
+// gh. Asked for by the tree itself, the spec it maps against is vetted as for
+// a sync — a tree may only pull in repositories its stack already has.
+func (c *Config) runReviewAdd(op Op, res *OpResult, fromTree bool) error {
+	inst, err := Get(c, op.Tree)
+	if err != nil {
+		return err
+	}
+	refs, err := ResolvePRRefs(op.PRs)
+	if err != nil {
+		return err
+	}
+	from := PMAgentName
+	if fromTree {
+		from = MainAgent
+	}
+	results, err := AddReview(c, inst.Name, refs, from, fromTree)
+	res.Tree = op.Tree
+	res.Text = FormatAddResults(results)
+	return err
+}
+
+// FormatAddResults renders what AddReview did.
+func FormatAddResults(results []AddResult) string {
+	var b strings.Builder
+	n := 0
+	for _, r := range results {
+		if r.Skipped != "" {
+			fmt.Fprintf(&b, "%s: not added — %s\n", r.PR, r.Skipped)
+			continue
+		}
+		n++
+		fmt.Fprintf(&b, "%s: added as repos/%s at %s\n", r.PR, r.Alias, shortSHA(r.Head))
+	}
+	if n > 0 {
+		b.WriteString("\nThe tree's agent has been told by mail. A running agent without a restart cannot commit in a member created just now; it can read it.")
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // runStackEdit edits a stack for the PM. In the watcher, not the PM's sandbox:
@@ -515,24 +559,34 @@ func reportWarnings(report *SyncReport) string {
 // (as committed in the stack's own checkout, which no agent can write) nor the
 // repo cache knows.
 func (c *Config) vetTreeSpec(inst *Instance) error {
+	spec := &Spec{Members: map[string]string{}}
+	for _, m := range inst.Members {
+		spec.Members[m.Alias] = m.URL
+	}
+	return c.vetSpec(inst.Stack, spec)
+}
+
+// vetSpec checks every member of spec is in the stack or the repo cache.
+func (c *Config) vetSpec(stackAlias string, spec *Spec) error {
 	known := map[string]bool{}
-	if stack := c.FindStack(inst.Stack); stack != nil {
-		if spec, err := LoadSpec(stack.Path); err == nil {
-			for _, url := range spec.Members {
+	if stack := c.FindStack(stackAlias); stack != nil {
+		if stackSpec, err := LoadSpec(stack.Path); err == nil {
+			for _, url := range stackSpec.Members {
 				if key, err := CacheKey(url); err == nil {
 					known[key] = true
 				}
 			}
 		}
 	}
-	for _, m := range inst.Members {
-		key, err := CacheKey(m.URL)
+	for _, alias := range spec.Aliases() {
+		url := spec.Members[alias]
+		key, err := CacheKey(url)
 		if err != nil {
-			return fmt.Errorf("member %q: %w", m.Alias, err)
+			return fmt.Errorf("member %q: %w", alias, err)
 		}
 		if !known[key] && !isClone(filepath.Join(ReposDir(), key)) {
 			return fmt.Errorf("member %q (%s) is neither in stack %s nor in the repo cache — add it to the stack first: supatree stack add %s %s",
-				m.Alias, m.URL, inst.Stack, inst.Stack, m.URL)
+				alias, url, stackAlias, stackAlias, url)
 		}
 	}
 	return nil

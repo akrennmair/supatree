@@ -78,12 +78,12 @@ func createMember(repo *baseClone, path string, meta *Meta, alias string, report
 		if err != nil {
 			return fmt.Errorf("fetch %s#%d: %w", ref.Repo, ref.Number, err)
 		}
-		if err := git.CreateWorktreeAt(repo.Clone, path, branch, sha); err != nil {
+		if err := addWorktree(repo.Clone, path, branch, sha); err != nil {
 			return fmt.Errorf("create member %q at %s#%d: %w", repo.Alias, ref.Repo, ref.Number, err)
 		}
 		return repoCopyFiles(repo, path, report)
 	}
-	offline, err := git.CreateWorktree(repo.Clone, path, branch)
+	offline, err := createWorktree(repo.Clone, path, branch, "")
 	if err != nil {
 		return fmt.Errorf("create member %q: %w", repo.Alias, err)
 	}
