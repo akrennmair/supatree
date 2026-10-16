@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -33,6 +34,14 @@ const (
 	OpRemove OpKind = "remove" // remove a tree
 	OpSync   OpKind = "sync"   // reconcile a tree's members with its spec
 	OpStop   OpKind = "stop"   // stop agent processes (a tree's, or orphans)
+	OpStack  OpKind = "stack"  // edit a stack: add, rm or dep a member
+)
+
+// Stack edit actions, for OpStack.
+const (
+	StackActionAdd = "add"
+	StackActionRm  = "rm"
+	StackActionDep = "dep"
 )
 
 // Op is one request.
@@ -50,6 +59,11 @@ type Op struct {
 	// Agent and Orphans select what OpStop stops, with Tree.
 	Agent   string `json:"agent,omitempty"`
 	Orphans bool   `json:"orphans,omitempty"`
+	// Action, Alias, URL and DependsOn describe an OpStack edit of Stack.
+	Action    string `json:"action,omitempty"`
+	Alias     string `json:"alias,omitempty"`
+	URL       string `json:"url,omitempty"`
+	DependsOn string `json:"depends_on,omitempty"`
 }
 
 // OpResult is the watcher's answer.
@@ -268,6 +282,8 @@ func (c *Config) RunOp(claimed ClaimedOp, hooks OpHooks) OpResult {
 		err = c.runSync(op, &res, filepath.Clean(claimed.Dir) != PMDir())
 	case OpStop:
 		err = runStop(op, &res)
+	case OpStack:
+		err = c.runStackEdit(op, &res)
 	default:
 		err = fmt.Errorf("unknown operation %q", op.Kind)
 	}
@@ -294,6 +310,85 @@ func (c *Config) authorizeOp(claimed ClaimedOp) error {
 		return fmt.Errorf("a tree may only sync itself")
 	}
 	return nil
+}
+
+// runStackEdit edits a stack for the PM. In the watcher, not the PM's sandbox:
+// publishing the edit pushes to the stack's remote, and adding a member clones
+// it into the repo cache, neither of which the PM can do (#17). An edit that
+// the next tree will not see is an error, however much of it succeeded.
+//
+// Everything the PM supplies is data: the edit is made in a private clone of
+// the origin a human pinned (ByWatcher), and a member it adds must be a
+// remote repository — a local path would have the watcher copy any repo on
+// this machine into the cache, where the PM can read it.
+func (c *Config) runStackEdit(op Op, res *OpResult) error {
+	var (
+		done   string
+		result StackEditResult
+		err    error
+	)
+	switch op.Action {
+	case StackActionAdd:
+		if !isRemoteRepoURL(op.URL) {
+			return fmt.Errorf("%q is not a remote repository URL — a PM may only add remote repositories to a stack", op.URL)
+		}
+		result, err = c.StackAdd(op.Stack, op.Alias, op.URL, true, ByWatcher)
+		done = fmt.Sprintf("added %s (%s) to %s.", op.Alias, op.URL, op.Stack)
+	case StackActionRm:
+		result, err = c.StackRm(op.Stack, op.Alias, ByWatcher)
+		done = fmt.Sprintf("removed %s from %s.", op.Alias, op.Stack)
+	case StackActionDep:
+		result, err = c.StackDep(op.Stack, op.Alias, op.DependsOn, ByWatcher)
+		done = fmt.Sprintf("%s now depends on %s in %s.", op.Alias, op.DependsOn, op.Stack)
+	default:
+		return fmt.Errorf("unknown stack edit %q", op.Action)
+	}
+	if err != nil {
+		return err
+	}
+	text := done + " " + result.Summary()
+	if !result.Live() {
+		return errors.New(text)
+	}
+	res.Text = text
+	return nil
+}
+
+// isRemoteRepoURL reports whether url is a repository a PM may have the
+// watcher clone: https://host/owner/name, ssh://git@host/owner/name or
+// git@host:owner/name, on a host the cache already holds clones from (or
+// github.com). An allowlist, not a parser: lenient parsing is how
+// "/any/dir:owner/name" passed for host:owner/name while git cloned it as a
+// local path, and every other transport git knows is refused by not being
+// listed. The host list keeps the watcher's credentials — which reach hosts the
+// PM cannot — from fetching from anywhere the PM names into a cache it reads.
+// Swappable in tests, whose remotes are local.
+var isRemoteRepoURL = func(url string) bool {
+	if !remoteRepoURL.MatchString(url) || isLocalGitURL(url) {
+		return false
+	}
+	r, ok := resolveRemote(url)
+	return ok && knownRepoHosts()[strings.ToLower(r.Host)]
+}
+
+// Each segment starts with a letter or digit: no "." or "..", no leading "-".
+var remoteRepoURL = regexp.MustCompile(
+	`^(?:https://[A-Za-z0-9][A-Za-z0-9.-]*(?::[0-9]+)?/` +
+		`|ssh://git@[A-Za-z0-9][A-Za-z0-9.-]*(?::[0-9]+)?/` +
+		`|git@[A-Za-z0-9][A-Za-z0-9.-]*:)` +
+		`[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*?(?:\.git)?/?$`)
+
+// knownRepoHosts are the hosts a human has already had supatree clone from —
+// the cache's top-level directories — plus github.com.
+func knownRepoHosts() map[string]bool {
+	hosts := map[string]bool{"github.com": true}
+	entries, _ := os.ReadDir(ReposDir())
+	for _, e := range entries {
+		if e.IsDir() && e.Name() != "local" && !strings.HasPrefix(e.Name(), ".") {
+			hosts[strings.ToLower(e.Name())] = true
+		}
+	}
+	return hosts
 }
 
 // runStop stops agent processes for the PM, whose sandbox can neither see

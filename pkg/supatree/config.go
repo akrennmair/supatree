@@ -72,6 +72,11 @@ type RepoSettings struct {
 type Stack struct {
 	Alias string `yaml:"alias"`
 	Path  string `yaml:"path"`
+	// Origin is the stack's remote, pinned here — in a file no agent can
+	// write — by the first stack edit someone runs from a terminal. It is the
+	// only remote the watcher publishes PM stack edits to: the checkout's own
+	// remotes are writable by the PM and by every tree agent (#17).
+	Origin string `yaml:"origin,omitempty"`
 }
 
 // DefaultConfig returns the config used when none exists on disk.
@@ -189,6 +194,22 @@ func AddStack(alias, path string) error {
 			return nil
 		}
 		c.Stacks = append(c.Stacks, Stack{Alias: alias, Path: filepath.Clean(path)})
+		return c.Save()
+	})
+}
+
+// PinStackOrigin records url as the stack's origin, under the registry lock.
+func PinStackOrigin(alias, url string) error {
+	return config.WithFileLock(LockPath(), func() error {
+		c, err := Load()
+		if err != nil {
+			return err
+		}
+		s := c.FindStack(alias)
+		if s == nil {
+			return fmt.Errorf("stack %q not found", alias)
+		}
+		s.Origin = url
 		return c.Save()
 	})
 }

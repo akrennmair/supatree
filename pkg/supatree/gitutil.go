@@ -124,3 +124,33 @@ func excludeFromStack(root string, patterns ...string) error {
 	_, err = f.WriteString(prefix + strings.Join(add, "\n") + "\n")
 	return err
 }
+
+// isLocalGitURL reports whether git would read url as a path on this machine
+// rather than a remote, by git's own rule: a URL with a scheme is remote
+// unless it is file://; scp-style host:path is remote only when no '/' comes
+// before the first ':' — so "/some/dir:owner/name" is a local path, however
+// much it looks like host:owner/name.
+func isLocalGitURL(url string) bool {
+	u := strings.TrimSpace(url)
+	if i := strings.Index(u, "://"); i >= 0 {
+		return strings.EqualFold(u[:i], "file")
+	}
+	colon := strings.Index(u, ":")
+	if colon < 0 {
+		return true
+	}
+	return strings.Contains(u[:colon], "/")
+}
+
+// AbsGitURL makes a local-path git URL absolute, relative to base, so it
+// still names the same repository when used from another directory. Remote
+// URLs are returned unchanged.
+func AbsGitURL(url, base string) string {
+	if !isLocalGitURL(url) || strings.HasPrefix(url, "file://") || filepath.IsAbs(url) {
+		return url
+	}
+	if abs, err := filepath.Abs(filepath.Join(base, url)); err == nil {
+		return abs
+	}
+	return url
+}

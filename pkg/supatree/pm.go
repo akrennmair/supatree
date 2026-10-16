@@ -152,8 +152,10 @@ routed to it.
   launches while too many agents are busy). Re-brief by calling it again. Same
   autonomy rule as ` + "`new_tree`" + `.
 - ` + "`stack_add`" + ` / ` + "`stack_rm`" + ` / ` + "`stack_dep`" + ` — change what a stack is made of. A stack
-  is shared, so each change is a commit in the stack repo; same autonomy rule as
-  ` + "`new_tree`" + `.
+  is shared, so each change is a commit pushed to the stack repo (or a pull
+  request, when its default branch refuses pushes); the answer says whether new
+  trees will see it. Existing trees keep their own copy of the spec. Same
+  autonomy rule as ` + "`new_tree`" + `.
 - ` + "`notify`" + ` — tell the human something. You cannot reach the desktop directly;
   this queues it for the watcher, which applies the same tiering and deduping as
   its own notifications.

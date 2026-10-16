@@ -37,11 +37,21 @@ var resolveRemote = github.ResolveRemote
 // local path or file:// URL — a repository with no remote at all — is keyed
 // under local/ by its absolute path.
 func CacheKey(url string) (string, error) {
+	key := ""
 	if r, ok := resolveRemote(url); ok {
-		return r.Key(), nil
+		key = r.Key()
+	} else if p, ok := localRepoPath(url); ok {
+		key = filepath.Join("local", strings.TrimPrefix(p, string(filepath.Separator)))
 	}
-	if p, ok := localRepoPath(url); ok {
-		return filepath.Join("local", strings.TrimPrefix(p, string(filepath.Separator))), nil
+	if key != "" {
+		// The key is a path under the cache: a "." or ".." segment in a URL
+		// must not walk it out of there, or onto another clone.
+		for _, seg := range strings.Split(filepath.ToSlash(key), "/") {
+			if seg == "" || seg == "." || seg == ".." {
+				return "", fmt.Errorf("%q does not name a repository supatree can cache (bad path segment %q)", url, seg)
+			}
+		}
+		return key, nil
 	}
 	return "", fmt.Errorf("%q is not a git URL supatree can clone (expected git@host:owner/name.git, https://host/owner/name, or a local path)", url)
 }

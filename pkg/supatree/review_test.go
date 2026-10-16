@@ -347,15 +347,23 @@ func TestNewReviewChecksOutThePR(t *testing.T) {
 	}
 }
 
-// #17: `stack add` commits locally; a review tree for that repo is built from
-// origin, which lacks it. That must be refused, saying why, not create a tree
-// with nothing to review.
+// #17: a member committed to the stack's checkout but never pushed — what
+// `stack add` did before it published — is missing from origin, which a review
+// tree is built from. That must be refused, saying why, not create a tree with
+// nothing to review.
 func TestNewReviewRefusesAMemberThatWasNeverPushed(t *testing.T) {
 	c, _, b := reviewStackFixture(t)
-	if err := c.StackAdd("s", "b", b, false); err != nil {
+	stack := c.FindStack("s").Path
+	spec, err := LoadSpec(stack)
+	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := NewReview(c, ReviewOptions{Stack: "s", Name: "rev",
+	spec.Members["b"] = b
+	if err := SaveSpec(stack, spec); err != nil {
+		t.Fatal(err)
+	}
+	run(t, stack, "commit", "-q", "-am", "supatree: add b (local only)")
+	_, _, err = NewReview(c, ReviewOptions{Stack: "s", Name: "rev",
 		PRs: []ReviewRef{{Repo: "o/b", Number: 1, URL: "https://github.com/o/b/pull/1"}}})
 	if err == nil {
 		t.Fatal("a review of a repo missing from origin's spec was accepted")
