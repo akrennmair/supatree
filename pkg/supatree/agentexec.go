@@ -196,6 +196,10 @@ func shQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
+// escalateAfter is how long nono gets, after each signal passed on to it, to
+// exit before the next, harder one.
+var escalateAfter = 3 * time.Second
+
 // AgentExecOptions parameterizes AgentExec.
 type AgentExecOptions struct {
 	Nono    string   // the real nono
@@ -222,7 +226,8 @@ func AgentExec(opts AgentExecOptions) int {
 	cmd.Env = withoutPathEntry(os.Environ(), opts.ShimDir)
 
 	// The terminal delivers ^C to nono itself; hangups and terminations sent
-	// to this process are passed on.
+	// to this process are passed on — and escalated if nono ignores them (an
+	// agent that outlives the close of its pane runs on with no pane, #1/#2).
 	sigs := make(chan os.Signal, 4)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	defer signal.Stop(sigs)
@@ -233,15 +238,35 @@ func AgentExec(opts AgentExecOptions) int {
 		code = 127
 		_, _ = fmt.Fprintf(opts.Stderr, "supatree: could not start %s: %v\n", opts.Nono, err)
 	} else {
+		rec := procRecordFromEnv(opts.Args)
+		rec.NonoPID = cmd.Process.Pid
+		registerProc(rec)
+		defer unregisterProc(rec.PID)
+
 		done := make(chan error, 1)
 		go func() { done <- cmd.Wait() }()
 		var err error
+		var escalate <-chan time.Time
+		escalated := 0
 	wait:
 		for {
 			select {
 			case s := <-sigs:
 				if s != syscall.SIGINT {
 					_ = cmd.Process.Signal(s)
+					if escalate == nil {
+						escalate = time.After(escalateAfter)
+					}
+				}
+			case <-escalate:
+				// Hung up on and still running: SIGTERM, then SIGKILL.
+				escalated++
+				if escalated == 1 {
+					_ = cmd.Process.Signal(syscall.SIGTERM)
+					escalate = time.After(escalateAfter)
+				} else {
+					killTree(cmd.Process.Pid)
+					escalate = nil
 				}
 			case err = <-done:
 				break wait

@@ -157,6 +157,11 @@ func watchRound(ctx context.Context) error {
 	deliver(ctx, cfg, evs, cur.At)
 	runSchedule(cur.At)
 	runLaunches(ctx)
+	if known, err := supatree.KnownTreeNames(cfg); err == nil {
+		for _, line := range supatree.SweepRemoved(supatreeWorkspace(), known) {
+			logWatch("sweep: %s", line)
+		}
+	}
 	return nil
 }
 
@@ -313,41 +318,137 @@ func runLaunches(ctx context.Context) {
 	if _, err := os.Stat(supatree.LaunchPath()); err != nil {
 		return
 	}
-	reqs, err := supatree.DrainLaunches()
-	if err != nil {
-		logWatch("drain launches: %v", err)
-		return
-	}
 	exe, err := os.Executable()
 	if err != nil {
 		logWatch("launch: %v", err)
 		return
 	}
-	for _, r := range reqs {
-		session := r.Session
-		if session == "" {
-			session = watchSession
-		}
-		if session == "" {
-			logWatch("launch %s:%s: no zellij session to open it in (start the watcher with --session)", r.Tree, r.Agent)
-			continue
-		}
-		// An unreadable session list is not proof the session is gone, so only
-		// a definite "not running" skips the launch.
-		if alive, err := zellij.SessionAlive(session); err == nil && !alive {
-			logWatch("launch %s:%s: zellij session %s is not running — open the agent from the sidebar instead", r.Tree, r.Agent, session)
-			continue
-		}
-		lctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-		cmd := exec.CommandContext(lctx, exe, "open", r.Tree, "--agent", r.Agent, "--session", session, "--background")
-		out, err := cmd.CombinedOutput()
-		cancel()
-		if err != nil {
-			logWatch("launch %s:%s: %v: %s", r.Tree, r.Agent, err, strings.TrimSpace(string(out)))
-			continue
-		}
-		logWatch("launched %s:%s in %s", r.Tree, r.Agent, session)
+	cfg, err := supatree.Load()
+	if err != nil {
+		logWatch("launch: load config: %v", err)
+		return
 	}
+	insts, _ := supatree.List(cfg)
+	gate := newLaunchGate(cfg, insts, time.Now())
+	reqs, err := supatree.TakeLaunches(gate.Admit)
+	if err != nil {
+		logWatch("take launches: %v", err)
+		return
+	}
+	if n := supatree.QueuedLaunches(); n > 0 && n != lastDeferred {
+		logWatch("holding %d launch(es): %d/%d agents busy", n, gate.Busy, gate.Max)
+	}
+	lastDeferred = supatree.QueuedLaunches()
+
+	// A second request for one agent rides on the first's launch, and gets
+	// the same answer.
+	answered := map[string]supatree.LaunchResult{}
+	for _, r := range reqs {
+		key := supatree.TabName(r.Tree, r.Agent)
+		res, done := answered[key]
+		if !done {
+			res = launchOne(ctx, exe, r)
+			answered[key] = res
+			if res.Outcome == supatree.LaunchStarted {
+				recentLaunches[key] = time.Now()
+			}
+		}
+		res.ID = r.ID
+		if err := supatree.WriteLaunchResult(res); err != nil {
+			logWatch("launch %s: answer: %v", key, err)
+		}
+	}
+}
+
+// lastDeferred is the queue length last logged, so a held launch is logged
+// when the hold changes rather than every two seconds.
+var lastDeferred int
+
+// recentLaunches remembers what this watcher started, and when. A new agent
+// has no transcript for its first seconds, so without this the next tick
+// would count it idle and admit another launch in its place.
+var recentLaunches = map[string]time.Time{}
+
+// newLaunchGate counts the busy agents across every tree: a live tab whose
+// transcript has grown within BusyWindow, or one this watcher started within
+// it.
+func newLaunchGate(cfg *supatree.Config, insts []*supatree.Instance, now time.Time) *supatree.LaunchGate {
+	for k, at := range recentLaunches {
+		if now.Sub(at) >= supatree.BusyWindow {
+			delete(recentLaunches, k)
+		}
+	}
+	live := liveAgentTabs()
+	gate := &supatree.LaunchGate{Max: cfg.ResolveMaxRunningAgents(), Live: func(tab string) bool { return live[tab] }}
+	for _, inst := range insts {
+		agents, err := supatree.LoadAgents(inst.Root)
+		if err != nil {
+			continue
+		}
+		for _, a := range agents {
+			tab := supatree.TabName(inst.Name, a.Name)
+			_, recent := recentLaunches[tab]
+			if live[tab] && (recent || supatree.AgentBusy(inst.Root, a, now)) {
+				gate.Busy++
+			}
+		}
+	}
+	return gate
+}
+
+// liveAgentTabs is the set of tabs, in the watcher's session, whose agent is
+// running. Unreadable is empty: the cap then counts nobody busy and lets
+// launches through, as the watcher did before it had a cap.
+func liveAgentTabs() map[string]bool {
+	live := map[string]bool{}
+	panes, err := zellij.ListPanes(watchSession)
+	if err != nil {
+		return live
+	}
+	for _, p := range panes {
+		if zellij.LivenessIn(panes, p.TabName) == zellij.LivenessAlive {
+			live[p.TabName] = true
+		}
+	}
+	return live
+}
+
+// launchOne runs one launch as a child `supatree open --background` and reads
+// back what it came to.
+func launchOne(ctx context.Context, exe string, r supatree.LaunchRequest) supatree.LaunchResult {
+	res := supatree.LaunchResult{Tree: r.Tree, Agent: r.Agent, Outcome: supatree.LaunchFailed}
+	session := r.Session
+	if session == "" {
+		session = watchSession
+	}
+	if session == "" {
+		res.Detail = "no zellij session to open it in (start the watcher with --session)"
+		logWatch("launch %s:%s: %s", r.Tree, r.Agent, res.Detail)
+		return res
+	}
+	// An unreadable session list is not proof the session is gone, so only
+	// a definite "not running" skips the launch.
+	if alive, err := zellij.SessionAlive(session); err == nil && !alive {
+		res.Detail = fmt.Sprintf("zellij session %s is not running — open the agent from the sidebar instead", session)
+		logWatch("launch %s:%s: %s", r.Tree, r.Agent, res.Detail)
+		return res
+	}
+	lctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	cmd := exec.CommandContext(lctx, exe, "open", r.Tree, "--agent", r.Agent, "--session", session, "--background")
+	out, err := cmd.CombinedOutput()
+	cancel()
+	if err != nil {
+		res.Detail = fmt.Sprintf("%v: %s", err, strings.TrimSpace(string(out)))
+		logWatch("launch %s:%s: %s", r.Tree, r.Agent, res.Detail)
+		return res
+	}
+	outcome, ok := supatree.ParseOpenOutcome(string(out))
+	if !ok {
+		outcome = supatree.LaunchStarted
+	}
+	res.Outcome = outcome
+	logWatch("launch %s:%s in %s: %s", r.Tree, r.Agent, session, outcome)
+	return res
 }
 
 // runSchedule fires any due jobs by queueing them for the PM.

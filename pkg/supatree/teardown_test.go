@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/panamafrancis/workbench/pkg/testutil"
+	"github.com/panamafrancis/workbench/pkg/zellij"
 )
 
 // originRepo creates a repo with one commit that worktrees can branch from.
@@ -269,5 +270,53 @@ func TestForkedMembersStopKeyingOnTheReviewedPR(t *testing.T) {
 	}
 	if len(saved.Review) == 0 {
 		t.Error("the pull requests this was forked from should still be recorded")
+	}
+}
+
+// CloseTree takes every "<tree>:…" layout, recorded agent or not (#2).
+func TestCloseTreeRemovesEveryTreeLayout(t *testing.T) {
+	testutil.IsolateHome(t)
+	ws := zellij.Workspace{LayoutsDir: t.TempDir(), SessionPrefix: "st-test-none-"}
+	for _, name := range []string{"berlin", "berlin:main", "berlin:old-agent", "berlinx", "berlinx:main"} {
+		writeFile(t, filepath.Join(ws.LayoutsDir, name+".kdl"), "layout {}")
+	}
+	CloseTree(ws, "berlin", &RemoveResult{})
+	left, _ := filepath.Glob(filepath.Join(ws.LayoutsDir, "*.kdl"))
+	if len(left) != 2 {
+		t.Errorf("layouts left = %v, want only berlinx's", left)
+	}
+}
+
+// The sweep removes what gone trees left, and nothing of a live tree's, a
+// tree that cannot be loaded, or supatree's own tabs.
+func TestSweepRemovedLayouts(t *testing.T) {
+	testutil.IsolateHome(t)
+	ws := zellij.Workspace{LayoutsDir: t.TempDir(), SessionPrefix: "st-test-none-"}
+	for _, name := range []string{"live", "live:main", "gone", "gone:api", "supatree-pm", "supatree-pm:reviews", "session-st-main"} {
+		writeFile(t, filepath.Join(ws.LayoutsDir, name+".kdl"), "layout {}")
+	}
+	// A tree whose state dir exists but whose meta does not parse is live.
+	if err := os.MkdirAll(filepath.Join(TreesStateDir(), "broken"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(ws.LayoutsDir, "broken.kdl"), "layout {}")
+	cfg := &Config{TreesBase: t.TempDir()}
+	if err := os.MkdirAll(filepath.Join(cfg.TreesBase, "live"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	known, err := KnownTreeNames(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	SweepRemoved(ws, known)
+	for _, name := range []string{"live", "live:main", "supatree-pm", "supatree-pm:reviews", "session-st-main", "broken"} {
+		if _, err := os.Stat(filepath.Join(ws.LayoutsDir, name+".kdl")); err != nil {
+			t.Errorf("swept %s, which is not a gone tree's", name)
+		}
+	}
+	for _, name := range []string{"gone", "gone:api"} {
+		if _, err := os.Stat(filepath.Join(ws.LayoutsDir, name+".kdl")); !os.IsNotExist(err) {
+			t.Errorf("left %s behind", name)
+		}
 	}
 }

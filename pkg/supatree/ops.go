@@ -32,6 +32,7 @@ const (
 	OpReview OpKind = "review" // create a review tree for pull requests
 	OpRemove OpKind = "remove" // remove a tree
 	OpSync   OpKind = "sync"   // reconcile a tree's members with its spec
+	OpStop   OpKind = "stop"   // stop agent processes (a tree's, or orphans)
 )
 
 // Op is one request.
@@ -46,6 +47,9 @@ type Op struct {
 	Tree   string    `json:"tree,omitempty"`
 	Force  bool      `json:"force,omitempty"`
 	Prune  bool      `json:"prune,omitempty"`
+	// Agent and Orphans select what OpStop stops, with Tree.
+	Agent   string `json:"agent,omitempty"`
+	Orphans bool   `json:"orphans,omitempty"`
 }
 
 // OpResult is the watcher's answer.
@@ -237,8 +241,10 @@ func OpSources(insts []*Instance) []string {
 // OpHooks lets the caller act on what an operation did with things this
 // package cannot reach (zellij tabs and layouts).
 type OpHooks struct {
-	// Removed is called after a tree has been removed.
-	Removed func(tree string, res *RemoveResult)
+	// Removed is called after a tree has been removed, and returns warnings
+	// for the answer: a removal whose tabs could not be closed must not be
+	// reported as clean.
+	Removed func(tree string, res *RemoveResult) []string
 }
 
 // RunOp carries out a claimed request. It never panics on bad input; every
@@ -260,6 +266,8 @@ func (c *Config) RunOp(claimed ClaimedOp, hooks OpHooks) OpResult {
 		err = c.runRemove(op, &res, hooks)
 	case OpSync:
 		err = c.runSync(op, &res, filepath.Clean(claimed.Dir) != PMDir())
+	case OpStop:
+		err = runStop(op, &res)
 	default:
 		err = fmt.Errorf("unknown operation %q", op.Kind)
 	}
@@ -286,6 +294,23 @@ func (c *Config) authorizeOp(claimed ClaimedOp) error {
 		return fmt.Errorf("a tree may only sync itself")
 	}
 	return nil
+}
+
+// runStop stops agent processes for the PM, whose sandbox can neither see
+// nor signal them.
+func runStop(op Op, res *OpResult) error {
+	stopped, err := StopAgents(StopTarget{Tree: op.Tree, Agent: op.Agent, Orphans: op.Orphans})
+	res.Tree = op.Tree
+	if len(stopped) == 0 && err == nil {
+		res.Text = "no matching agent process was running."
+		return nil
+	}
+	var b strings.Builder
+	for _, r := range stopped {
+		fmt.Fprintf(&b, "stopped %s (pid %d)\n", r.Who(), r.PID)
+	}
+	res.Text = strings.TrimSpace(b.String())
+	return err
 }
 
 func (c *Config) runNew(op Op, res *OpResult) error {
@@ -326,13 +351,14 @@ func (c *Config) runRemove(op Op, res *OpResult, hooks OpHooks) error {
 	if err != nil {
 		return err
 	}
+	warnings := removed.Warnings
 	if hooks.Removed != nil {
-		hooks.Removed(op.Tree, removed)
+		warnings = append(warnings, hooks.Removed(op.Tree, removed)...)
 	}
 	res.Tree = op.Tree
 	res.Text = "removed supatree " + op.Tree
-	if len(removed.Warnings) > 0 {
-		res.Text += "\nwarnings: " + strings.Join(removed.Warnings, "; ")
+	if len(warnings) > 0 {
+		res.Text += "\nwarnings: " + strings.Join(warnings, "; ")
 	}
 	return nil
 }

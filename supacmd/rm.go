@@ -28,6 +28,11 @@ var rmCmd = &cobra.Command{
 		}
 		inst, err := supatree.Get(stCfg, name)
 		if err != nil {
+			// Already gone, perhaps half-way: what it left in zellij and the
+			// process table can still be cleaned up.
+			if w := cleanupTreeTabs(name, nil); len(w) == 0 {
+				fmt.Fprintf(os.Stderr, "(%s is not a supatree; closed any tabs and agents it left behind)\n", name)
+			}
 			return err
 		}
 		if !rmYes {
@@ -61,9 +66,12 @@ func init() {
 }
 
 // cleanupTreeTabs closes a removed tree's tabs in every supatree session —
-// stopping its agents — and deletes their layouts.
-func cleanupTreeTabs(tree string, res *supatree.RemoveResult) {
-	for _, w := range supatree.CloseTree(supatreeWorkspace(), tree, res) {
+// stopping its agents — and deletes their layouts, printing and returning
+// what went wrong.
+func cleanupTreeTabs(tree string, res *supatree.RemoveResult) []string {
+	warnings := supatree.CloseTree(supatreeWorkspace(), tree, res)
+	for _, w := range warnings {
 		fmt.Fprintf(os.Stderr, "warning: %s\n", w)
 	}
+	return warnings
 }

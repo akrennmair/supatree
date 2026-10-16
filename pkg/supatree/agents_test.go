@@ -54,7 +54,7 @@ func TestEnsureAgentDistinctSessions(t *testing.T) {
 	root := t.TempDir()
 	now := time.Now()
 	a, _, _ := EnsureAgent(root, "canberra", "main", defaultModelKey, now)
-	b, _, _ := EnsureAgent(root, "canberra", "reviewer", defaultModelKey, now)
+	b, _, _ := EnsureAgent(root, "canberra", agentReviewer, defaultModelKey, now)
 	if a.SessionID == b.SessionID {
 		t.Error("distinct agents must get distinct session ids")
 	}
@@ -101,7 +101,7 @@ func TestAgentAddress(t *testing.T) {
 	}
 	// Not the zellij tab identity: a colon has no business in a bus name, and
 	// the two namespaces must be free to diverge.
-	if strings.Contains(AgentAddress("canberra", "reviewer"), ":") {
+	if strings.Contains(AgentAddress("canberra", agentReviewer), ":") {
 		t.Error("address contains a colon")
 	}
 }
@@ -109,7 +109,7 @@ func TestAgentAddress(t *testing.T) {
 func TestEnsureAgentRecordsAddress(t *testing.T) {
 	testutil.IsolateHome(t)
 	root := t.TempDir()
-	a, _, err := EnsureAgent(root, "canberra", "reviewer", defaultModelKey, time.Now())
+	a, _, err := EnsureAgent(root, "canberra", agentReviewer, defaultModelKey, time.Now())
 	if err != nil {
 		t.Fatalf("EnsureAgent: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestRemoveAgent(t *testing.T) {
 	testutil.IsolateHome(t)
 	root := t.TempDir()
 	now := time.Now()
-	for _, name := range []string{MainAgent, "reviewer", "tester"} {
+	for _, name := range []string{MainAgent, agentReviewer, "tester"} {
 		if _, _, err := EnsureAgent(root, "canberra", name, defaultModelKey, now); err != nil {
 			t.Fatal(err)
 		}
@@ -141,8 +141,8 @@ func TestRemoveAgent(t *testing.T) {
 	if _, err := RemoveAgent(root, "nobody"); err == nil {
 		t.Fatal("RemoveAgent of an unknown agent succeeded")
 	}
-	removed, err := RemoveAgent(root, "reviewer")
-	if err != nil || removed.Name != "reviewer" {
+	removed, err := RemoveAgent(root, agentReviewer)
+	if err != nil || removed.Name != agentReviewer {
 		t.Fatalf("RemoveAgent(reviewer) = %+v, %v", removed, err)
 	}
 	agents, _ := LoadAgents(root)
@@ -152,5 +152,21 @@ func TestRemoveAgent(t *testing.T) {
 	}
 	if strings.Join(names, ",") != "main,tester" {
 		t.Fatalf("agents after removal = %v, want main,tester", names)
+	}
+}
+
+// An address is reported only for a model that launches its agent under it.
+func TestBusAddressNeedsNameArgs(t *testing.T) {
+	a := Agent{Name: MainAgent, Model: "claude", Address: "st-canberra-main"}
+	named := &Config{Models: map[string]config.Model{"claude": {Binary: "claude", AgentNameArgs: []string{"--name", "{agent_name}"}}}}
+	if got := busAddress(named, a); got != a.Address {
+		t.Errorf("busAddress with name args = %q, want %q", got, a.Address)
+	}
+	unnamed := &Config{Models: map[string]config.Model{"claude": {Binary: "claude"}}}
+	if got := busAddress(unnamed, a); got != "" {
+		t.Errorf("busAddress without name args = %q, want none: the agent never ran under it", got)
+	}
+	if got := busAddress(nil, a); got != "" {
+		t.Errorf("busAddress with no config = %q, want none", got)
 	}
 }

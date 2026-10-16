@@ -558,7 +558,7 @@ func (m *Model) openAgent(tree, agent string) tea.Cmd {
 		if inst == nil {
 			return actionDoneMsg{err: fmt.Errorf("supatree %q gone", tree)}
 		}
-		_, err := supatree.OpenRootAgent(inst, m.stCfg, m.ws, m.stCfg.ResolveSidebarWidth(), agent, "", nil)
+		_, err := supatree.OpenRootAgent(inst, m.stCfg, m.ws, m.stCfg.ResolveSidebarWidth(), agent, supatree.OpenOptions{}, nil)
 		// Going to a supatree is what "I have seen this" means, so it clears the
 		// attention marker. Doing it here rather than per render keeps the
 		// per-tab sidebars off the ui.yml lock. Only on success: an open that
