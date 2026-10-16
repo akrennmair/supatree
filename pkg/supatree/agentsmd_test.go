@@ -128,3 +128,22 @@ func TestScaffoldedStackAgentsMDIsCurrent(t *testing.T) {
 		t.Errorf("check = %v, %v; want current", state, err)
 	}
 }
+
+// The checkout is agent-writable, so a non-file there is refused, not read.
+func TestReadAgentsMDRefusesNonFiles(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink("/dev/zero", link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readAgentsMD(link); err == nil {
+		t.Error("read through a symlink to /dev/zero")
+	}
+	big := filepath.Join(dir, "big")
+	if err := os.WriteFile(big, make([]byte, maxAgentsMD+1), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readAgentsMD(big); err == nil {
+		t.Error("read a file over the cap")
+	}
+}

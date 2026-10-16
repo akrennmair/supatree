@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,11 +78,41 @@ func CheckAgentsMD(content []byte) (AgentsMDState, []byte) {
 	return AgentsMDOK, nil
 }
 
+// maxAgentsMD bounds how much of an AGENTS.md is read: far more than any
+// scaffold, which is all classifying one needs to see in full.
+const maxAgentsMD = 1 << 20
+
+// readAgentsMD reads a stack's AGENTS.md, refusing anything but a regular
+// file and stopping at maxAgentsMD. The checkout is agent-writable: a FIFO
+// there would hang doctor, and a link to /dev/zero would read forever.
+func readAgentsMD(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", path)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(io.LimitReader(f, maxAgentsMD+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxAgentsMD {
+		return nil, fmt.Errorf("%s is over %d bytes", path, maxAgentsMD)
+	}
+	return data, nil
+}
+
 // StackAgentsMDCheck reports on a stack checkout's AGENTS.md. It reads the
 // checkout, which agents can write, and only to classify it: nothing there is
 // run or trusted.
 func StackAgentsMDCheck(stack *Stack) (AgentsMDState, error) {
-	data, err := os.ReadFile(filepath.Join(stack.Path, AgentsMDName))
+	data, err := readAgentsMD(filepath.Join(stack.Path, AgentsMDName))
 	if os.IsNotExist(err) {
 		return AgentsMDOK, nil
 	}
@@ -102,7 +133,7 @@ func (c *Config) UpgradeAgentsMD(stackAlias string, mode StackEditMode) (StackEd
 	}
 	return c.editStackFile(stack, mode, AgentsMDName, "AGENTS.md: point at the generated info.md (supatree stack upgrade)", func(dir string) error {
 		path := filepath.Join(dir, AgentsMDName)
-		data, err := os.ReadFile(path)
+		data, err := readAgentsMD(path)
 		if os.IsNotExist(err) {
 			return errNoChange
 		}

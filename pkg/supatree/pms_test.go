@@ -300,3 +300,20 @@ func TestTreeAgentsReadOnlyTheRoster(t *testing.T) {
 		}
 	}
 }
+
+// A launch's refresh writes what the registry says now.
+func TestPublishPMRoster(t *testing.T) {
+	testutil.IsolateHome(t)
+	if _, err := AddPM("roshi", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(PMRosterPath()); err != nil {
+		t.Fatal(err)
+	}
+	if err := PublishPMRoster(); err != nil {
+		t.Fatal(err)
+	}
+	if roster, err := ReadPMRoster(); err != nil || len(roster) != 2 {
+		t.Errorf("roster = %+v, %v; want both PMs", roster, err)
+	}
+}

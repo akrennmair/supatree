@@ -178,6 +178,7 @@ type RosterPM struct {
 	Top   bool   `json:"top,omitempty"`
 }
 
+// writeRoster publishes pms. Callers hold the registry lock.
 func writeRoster(pms []PM) error {
 	if err := os.MkdirAll(RosterDir(), 0755); err != nil {
 		return fmt.Errorf("create roster dir: %w", err)
@@ -192,12 +193,21 @@ func writeRoster(pms []PM) error {
 // PublishPMRoster refreshes the roster from the registry. The registry's own
 // writes keep it current; this is for a launch, so a roster that predates the
 // roster's existence, or was deleted, is there before an agent asks for it.
+//
+// It reads and writes under the registry lock, like every other roster write:
+// unlocked, a launch could put back the list a concurrent `pm new` had just
+// replaced, and two launches would share the one temp file.
 func PublishPMRoster() error {
-	pms, err := LoadPMs()
-	if err != nil {
+	if _, err := LoadPMs(); err != nil { // migrates, under the lock it takes itself
 		return err
 	}
-	return writeRoster(pms)
+	return config.WithFileLock(pmsLockPath(), func() error {
+		pms, err := readPMs()
+		if err != nil {
+			return err
+		}
+		return writeRoster(pms)
+	})
 }
 
 // ReadPMRoster returns the published PMs, top first. Unlike LoadPMs it works

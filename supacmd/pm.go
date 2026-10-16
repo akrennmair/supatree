@@ -1,7 +1,9 @@
 package supacmd
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"strings"
@@ -90,7 +92,11 @@ var pmLsCmd = &cobra.Command{
 		pms, err := supatree.LoadPMs()
 		if err != nil {
 			// Inside a tree's sandbox the registry is out of reach, but the
-			// roster published from it is not.
+			// roster published from it is not. Any other failure is a broken
+			// registry, which a roster copied from it would only hide.
+			if !errors.Is(err, fs.ErrPermission) {
+				return err
+			}
 			roster, rerr := supatree.ReadPMRoster()
 			if rerr != nil {
 				return err
