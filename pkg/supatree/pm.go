@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
+	"github.com/panamafrancis/workbench/pkg/config"
 	"github.com/panamafrancis/workbench/pkg/sandbox"
 	"github.com/panamafrancis/workbench/pkg/zellij"
 )
@@ -23,14 +25,17 @@ const PMAddress = "st-pm"
 // notes in. It reads the trees, the ledger, its request queue, and the git
 // dirs a status round reads.
 //
-// Because tree state is one directory, a supatree created after the PM started
-// is already inside its grant: nothing has to be relaunched (supatree#3).
+// Because tree state is one directory, and the repo cache is read as one
+// directory rather than clone by clone, a supatree created after the PM
+// started — on repos it has never seen — is already inside its grant: nothing
+// has to be relaunched (supatree#3). Reading the cache is no wider in kind than
+// reading the trees base, which already holds every checkout.
 // Creating or removing a tree is not something the PM does itself — those
 // write repos/ and base clones — it asks the watcher (ops.go).
-func PMGrants(cfg *Config, insts []*Instance) sandbox.Grants {
+func PMGrants(cfg *Config) sandbox.Grants {
 	g := sandbox.Grants{
 		Allow: []string{PMDir(), TreesStateDir(), OutboxDir()},
-		Read:  []string{cfg.ResolveTreesBase(), LedgerDir(), RequestsDir()},
+		Read:  []string{cfg.ResolveTreesBase(), LedgerDir(), RequestsDir(), ReposDir()},
 	}
 	// The stack repos hold the notes the PM curates. They are git repos, so
 	// anything it writes there arrives as a diff you can review.
@@ -42,13 +47,6 @@ func PMGrants(cfg *Config, insts []*Instance) sandbox.Grants {
 			g.Allow = append(g.Allow, s.Path)
 		}
 	}
-	reads := map[string]bool{}
-	for _, inst := range insts {
-		for _, dir := range memberGitDirs(cfg, inst, "") {
-			reads[dir] = true
-		}
-	}
-	g.Read = append(g.Read, sortedKeys(reads)...)
 	g.Allow = dedupe(g.Allow)
 	g.Read = dedupe(g.Read)
 	return g
@@ -241,28 +239,78 @@ func currentPMAgentID() string {
 }
 
 // OpenPM opens or focuses the named PM's tab; an empty name is the top PM.
-func OpenPM(cfg *Config, ws zellij.Workspace, sidebarWidth, name string) (bool, error) {
+//
+// One PM is one process. The open runs under a per-tab lock, so a retry made
+// while the first open is still working waits for it and then finds its tab;
+// and a PM the process registry shows already running is focused, or — with
+// no tab of its own left — refused, rather than started a second time on the
+// same session (#1).
+func OpenPM(cfg *Config, ws zellij.Workspace, sidebarWidth, name string) (opened bool, err error) {
 	// nono refuses a grant on a path that does not exist.
 	if err := EnsureLayout(); err != nil {
 		return false, err
 	}
-	if err := ScaffoldPM(); err != nil {
+	pm, err := resolveOpenPM(name)
+	if err != nil {
 		return false, err
+	}
+	err = config.WithFileLock(openLockPath(pm.Tab()), func() error {
+		opened, err = openPMLocked(cfg, ws, sidebarWidth, pm)
+		return err
+	})
+	return opened, err
+}
+
+func resolveOpenPM(name string) (PM, error) {
+	if err := ScaffoldPM(); err != nil {
+		return PM{}, err
+	}
+	pms, err := LoadPMs()
+	if err != nil {
+		return PM{}, err
+	}
+	if name == "" {
+		return pms[0], nil
+	}
+	p := FindPM(pms, name)
+	if p == nil {
+		return PM{}, fmt.Errorf("no PM named %q", name)
+	}
+	return *p, nil
+}
+
+// runningPM is the registry's record of pm's process, if it is running.
+func runningPM(pm PM) (ProcRecord, bool) {
+	for _, r := range ListProcs() {
+		if r.IsPM() && r.PM == pm.Name {
+			return r, true
+		}
+	}
+	return ProcRecord{}, false
+}
+
+func openPMLocked(cfg *Config, ws zellij.Workspace, sidebarWidth string, pm PM) (bool, error) {
+	if r, ok := runningPM(pm); ok {
+		session := os.Getenv("ZELLIJ_SESSION_NAME")
+		tabs, err := zellij.TabNames()
+		switch {
+		case err != nil:
+			return false, err
+		case r.Session == session && tabs[pm.Tab()]:
+			logLaunch("PM "+pm.Name, pm.Tab(), "focused (running as pid "+strconv.Itoa(r.PID)+")")
+			return false, zellij.GoToTab(pm.Tab())
+		default:
+			logLaunch("PM "+pm.Name, pm.Tab(), "refused (running as pid "+strconv.Itoa(r.PID)+" in "+r.Session+", no tab here)")
+			return false, fmt.Errorf("PM %s is already running (pid %d, zellij session %s) but has no tab here — "+
+				"starting it again would put two PMs on one conversation. Stop it with `supatree kill %d`, then open it again",
+				pm.Name, r.PID, r.Session, r.PID)
+		}
 	}
 	pms, err := LoadPMs()
 	if err != nil {
 		return false, err
 	}
-	pm := pms[0]
-	if name != "" {
-		p := FindPM(pms, name)
-		if p == nil {
-			return false, fmt.Errorf("no PM named %q", name)
-		}
-		pm = *p
-	}
-	insts, err := List(cfg)
-	if err != nil {
+	if err := ScaffoldPM(); err != nil {
 		return false, err
 	}
 	if err := sandbox.TrustDir(PMDir()); err != nil {
@@ -288,12 +336,18 @@ func OpenPM(cfg *Config, ws zellij.Workspace, sidebarWidth, name string) (bool, 
 		sid = ""
 		resume = pm.Name == pms[0].Name
 	}
-	grants := PMGrants(cfg, insts)
+	grants := PMGrants(cfg)
 	if grants.Empty() {
 		return false, fmt.Errorf("refusing to build a sandbox with no filesystem grants")
 	}
 	nonoArgs := sandbox.BuildGrantedAgentNonoArgs(model, grants, PMDir(), sid, pm.Address(), resume)
-	return launch(ws.OpenOrFocusTab(pm.Tab(), PMDir(), sidebarWidth, nonoArgs, withAgentExec(PMEnv(pm))))
+	action, err := ws.OpenOrFocusTabAction(pm.Tab(), PMDir(), sidebarWidth, nonoArgs, withAgentExec(PMEnv(pm)))
+	if err != nil {
+		logLaunch("PM "+pm.Name, pm.Tab(), "failed: "+err.Error())
+		return false, &LaunchError{Err: err}
+	}
+	logLaunch("PM "+pm.Name, pm.Tab(), action.String())
+	return action != zellij.TabFocused, nil
 }
 
 // NewPM registers a PM and, when open is set, opens it. A PM whose open fails

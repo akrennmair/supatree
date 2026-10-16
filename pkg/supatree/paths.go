@@ -285,9 +285,8 @@ func RequestsLockPath() string {
 }
 
 // PMTab is the Zellij tab name the PM opens into. Reserved the same way DashTab
-// is, so it can never collide with a supatree name — and, because
-// OpenOrFocusTab focuses a live tab rather than opening a second one, it is
-// also what makes the PM a singleton.
+// is, so it can never collide with a supatree name. (What keeps a PM to one
+// process is OpenPM's lock and the process registry, not the name.)
 const PMTab = "supatree-pm"
 
 // LaunchPath is the queue of agents the PM has asked to have started. It lives

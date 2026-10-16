@@ -6,6 +6,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/panamafrancis/workbench/pkg/config"
 	"github.com/panamafrancis/workbench/pkg/sandbox"
 	"github.com/panamafrancis/workbench/pkg/zellij"
 )
@@ -38,11 +39,31 @@ type OpenOptions struct {
 // (nono --allow the whole tree). Several agents share the root but resume
 // independently via their session IDs. Warnings that do not stop the open go
 // to startupW.
+//
+// The open runs under the tab's lock (openLockPath), so a sidebar enter and a
+// watcher launch of the same agent cannot both find no tab and both start it;
+// every open is recorded in the launch log.
 func OpenRootAgent(inst *Instance, c *Config, ws zellij.Workspace, sidebarWidth, agentName string, opts OpenOptions, startupW io.Writer) (outcome LaunchOutcome, err error) {
 	if agentName == "" {
 		agentName = MainAgent
 	}
 	tab := TabName(inst.Name, agentName)
+	lockErr := config.WithFileLock(openLockPath(tab), func() error {
+		outcome, err = openRootAgentLocked(inst, c, ws, sidebarWidth, agentName, tab, opts, startupW)
+		return nil
+	})
+	if lockErr != nil {
+		return LaunchFailed, lockErr
+	}
+	what := string(outcome)
+	if err != nil {
+		what += ": " + err.Error()
+	}
+	logLaunch("agent "+tab, tab, what)
+	return outcome, err
+}
+
+func openRootAgentLocked(inst *Instance, c *Config, ws zellij.Workspace, sidebarWidth, agentName, tab string, opts OpenOptions, startupW io.Writer) (outcome LaunchOutcome, err error) {
 	if opts.Wake && zellij.TabLiveness("", tab) == zellij.LivenessAlive {
 		return wakeAgent(inst.Root, tab, agentName), nil
 	}
@@ -139,15 +160,6 @@ func (e *LaunchError) Unwrap() error { return e.Err }
 func LaunchUncertain(err error) bool {
 	var le *LaunchError
 	return errors.As(err, &le)
-}
-
-// launch passes OpenOrFocusTab's result on, marking a failure as a LaunchError.
-// (OpenRootAgent wraps its own; this is for the opens that report a bool.)
-func launch(opened bool, err error) (bool, error) {
-	if err != nil {
-		return opened, &LaunchError{Err: err}
-	}
-	return opened, nil
 }
 
 // requireMember resolves a member alias to a worktree that actually exists on

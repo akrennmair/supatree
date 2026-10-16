@@ -34,10 +34,9 @@ var pmCmd = &cobra.Command{
 		if len(args) > 0 {
 			name = args[0]
 		}
-		// Singleton per PM by tab name, not by file lock: OpenOrFocusTab focuses
-		// the live tab rather than opening a second one, and the PM tab names are
-		// reserved so no supatree can collide with them. A lock would be theatre
-		// — nothing in this process stays alive to hold one on the agent's behalf.
+		// One process per PM: OpenPM opens under a per-tab lock and checks the
+		// process registry, so a retry while the first open is still working
+		// finds its tab instead of starting a second PM (#1).
 		_, err := supatree.OpenPM(stCfg, supatreeWorkspace(), stCfg.ResolveSidebarWidth(), name)
 		return err
 	},

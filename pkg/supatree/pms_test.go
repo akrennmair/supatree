@@ -201,3 +201,37 @@ func TestColdStartMarkerIsTakenOnce(t *testing.T) {
 		t.Error("an empty session took a marker")
 	}
 }
+
+// A PM the registry shows running is found by name, so OpenPM focuses or
+// refuses instead of starting it twice (#1).
+func TestRunningPM(t *testing.T) {
+	testutil.IsolateHome(t)
+	orig := procIsAgentExec
+	procIsAgentExec = func(int) bool { return true }
+	t.Cleanup(func() { procIsAgentExec = orig })
+
+	registerProc(ProcRecord{PID: os.Getpid(), PM: "reviews", Session: "st-main"})
+	if r, ok := runningPM(PM{Name: "reviews"}); !ok || r.PID != os.Getpid() {
+		t.Errorf("runningPM(reviews) = %+v, %v; want the recorded process", r, ok)
+	}
+	if _, ok := runningPM(PM{Name: DefaultPMName}); ok {
+		t.Error("another PM's process was taken for the top PM's")
+	}
+}
+
+func TestLaunchCaller(t *testing.T) {
+	orig := os.Args
+	t.Cleanup(func() { os.Args = orig })
+	os.Args = []string{"supatree", "open", "lima", "--agent", MainAgent, "--background"}
+	if got := launchCaller(); got != "watcher" {
+		t.Errorf("background open: %q, want watcher", got)
+	}
+	os.Args = []string{"supatree", "pm", "reviews"}
+	if got := launchCaller(); got != "cli(supatree pm reviews)" {
+		t.Errorf("pm: %q", got)
+	}
+	t.Setenv("SUPATREE_SIDEBAR", "1")
+	if got := launchCaller(); got != "sidebar" {
+		t.Errorf("sidebar: %q", got)
+	}
+}

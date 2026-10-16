@@ -17,7 +17,7 @@ func TestPMGrants(t *testing.T) {
 		{Name: treeA, Root: "/trees/canberra"},
 		{Name: treeB, Root: "/trees/darwin"},
 	}
-	g := PMGrants(cfg, insts)
+	g := PMGrants(cfg)
 
 	allow := strings.Join(g.Allow, " ")
 	for _, want := range []string{PMDir(), TreesStateDir(), OutboxDir(), "/elsewhere/stacks/s"} {
@@ -40,6 +40,23 @@ func TestPMGrants(t *testing.T) {
 	if len(g.Read) == 0 {
 		t.Error("Read is empty — the PM cannot see the trees at all")
 	}
+	// The repo cache is read as one directory, never clone by clone: a grant
+	// list that grows with the trees is one that goes stale under a running
+	// PM, and refreshing it meant relaunching the PM mid-session (#3).
+	read := strings.Join(g.Read, " ")
+	if !strings.Contains(read, ReposDir()) {
+		t.Errorf("Read = %v, want the repo cache %q", g.Read, ReposDir())
+	}
+	for _, r := range g.Read {
+		if strings.HasSuffix(r, "/.git") {
+			t.Errorf("Read includes the per-clone %q", r)
+		}
+	}
+	for _, w := range g.Allow {
+		if strings.HasPrefix(w, ReposDir()) {
+			t.Errorf("Allow includes %q — the repo cache is read-only to the PM", w)
+		}
+	}
 }
 
 // A stack at the default location is already covered by the stacks dir grant
@@ -47,7 +64,7 @@ func TestPMGrants(t *testing.T) {
 func TestPMGrantsNoDuplicateStack(t *testing.T) {
 	testutil.IsolateHome(t)
 	cfg := &Config{Stacks: []Stack{{Alias: "s", Path: DefaultStackPath("s")}}}
-	g := PMGrants(cfg, nil)
+	g := PMGrants(cfg)
 	seen := map[string]int{}
 	for _, p := range g.Allow {
 		seen[p]++

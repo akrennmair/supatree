@@ -356,3 +356,49 @@ func (g *LaunchGate) Admit(r LaunchRequest) bool {
 	g.seen[tab] = true
 	return true
 }
+
+// LaunchLogPath records every agent and PM launch: what opened, what that
+// came to, and who asked. A PM relaunched mid-session used to leave no trace
+// of why (#3).
+func LaunchLogPath() string {
+	return filepath.Join(LogsDir(), "launch.log")
+}
+
+// logLaunch appends one line to the launch log. Best effort.
+func logLaunch(who, tab, what string) {
+	if err := os.MkdirAll(LogsDir(), 0755); err != nil {
+		return
+	}
+	f, err := os.OpenFile(LaunchLogPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer func() { _ = f.Close() }()
+	_, _ = fmt.Fprintf(f, "%s %s tab=%s %s by=%s\n", time.Now().Format(time.RFC3339), who, tab, what, launchCaller())
+}
+
+// launchCaller names what is opening an agent: the sidebar, the watcher, or a
+// command someone ran.
+func launchCaller() string {
+	if os.Getenv("SUPATREE_SIDEBAR") == "1" {
+		return "sidebar"
+	}
+	args := os.Args[1:]
+	for _, a := range args {
+		if a == "--background" {
+			return "watcher"
+		}
+	}
+	if len(args) > 3 {
+		args = args[:3]
+	}
+	return "cli(supatree " + strings.Join(args, " ") + ")"
+}
+
+// openLockPath serializes opening one tab. The check that a tab exists and
+// the open that follows are seconds apart (preflight, trust, grants), and two
+// opens in that window — a `supatree pm` retried while the machine was slow —
+// each found no tab and each started a PM on the same session (#1).
+func openLockPath(tab string) string {
+	return filepath.Join(StateRoot(), "locks", "open-"+strings.ReplaceAll(tab, ":", "_")+".lock")
+}

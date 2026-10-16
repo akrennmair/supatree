@@ -3,7 +3,6 @@ package supatree
 import (
 	"os"
 	"path/filepath"
-	"sort"
 
 	"github.com/panamafrancis/workbench/pkg/config"
 	"github.com/panamafrancis/workbench/pkg/sandbox"
@@ -106,7 +105,7 @@ func memberGitDirs(c *Config, inst *Instance, only string) []string {
 func EnsureLayout() error {
 	for _, dir := range []string{
 		ConfigDir(), StateRoot(), CacheDir(), AgentCacheDir(),
-		TreesStateDir(), PMDir(), LedgerDir(), OutboxDir(), RequestsDir(), LogsDir(),
+		TreesStateDir(), PMDir(), LedgerDir(), OutboxDir(), RequestsDir(), LogsDir(), ReposDir(),
 	} {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return err
@@ -126,15 +125,5 @@ func dedupe(paths []string) []string {
 		seen[p] = true
 		out = append(out, p)
 	}
-	return out
-}
-
-// sortedKeys returns m's keys in order, for stable grant lists.
-func sortedKeys(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
 	return out
 }
