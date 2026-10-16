@@ -74,6 +74,8 @@ func openRootAgentLocked(inst *Instance, c *Config, ws zellij.Workspace, sidebar
 	if err := EnsureLayout(); err != nil {
 		return LaunchFailed, err
 	}
+	// Best effort: an agent without a roster is told the address pattern.
+	_ = PublishPMRoster()
 	key := inst.Model
 	if opts.Model != "" {
 		key = opts.Model
@@ -189,6 +191,7 @@ func OpenMemberAgent(inst *Instance, c *Config, ws zellij.Workspace, sidebarWidt
 	if err := EnsureLayout(); err != nil {
 		return false, err
 	}
+	_ = PublishPMRoster()
 	key := inst.Model
 	if modelOverride != "" {
 		key = modelOverride

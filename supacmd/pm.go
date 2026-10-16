@@ -1,7 +1,9 @@
 package supacmd
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"strings"
@@ -89,7 +91,24 @@ var pmLsCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		pms, err := supatree.LoadPMs()
 		if err != nil {
-			return err
+			// Inside a tree's sandbox the registry is out of reach, but the
+			// roster published from it is not. Any other failure is a broken
+			// registry, which a roster copied from it would only hide.
+			if !errors.Is(err, fs.ErrPermission) {
+				return err
+			}
+			roster, rerr := supatree.ReadPMRoster()
+			if rerr != nil {
+				return err
+			}
+			for _, p := range roster {
+				top := ""
+				if p.Top {
+					top = "  (top)"
+				}
+				fmt.Printf("%-16s %s%s\n", p.Name, p.Agent, top)
+			}
+			return nil
 		}
 		for i, p := range pms {
 			top := ""

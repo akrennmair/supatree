@@ -235,3 +235,85 @@ func TestLaunchCaller(t *testing.T) {
 		t.Errorf("sidebar: %q", got)
 	}
 }
+
+// Tree agents cannot read the registry, so every change to it republishes the
+// roster they can: names and addresses, top first, and no session IDs.
+func TestRosterFollowsTheRegistry(t *testing.T) {
+	testutil.IsolateHome(t)
+	if _, err := AddPM("roshi", ""); err != nil {
+		t.Fatal(err)
+	}
+	roster, err := ReadPMRoster()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []RosterPM{{Name: DefaultPMName, Agent: PMAgentName, Top: true}, {Name: "roshi", Agent: PMAgentName + "-roshi"}}
+	if len(roster) != len(want) || roster[0] != want[0] || roster[1] != want[1] {
+		t.Fatalf("roster = %+v, want %+v", roster, want)
+	}
+	data, _ := os.ReadFile(PMRosterPath())
+	if strings.Contains(string(data), "session") {
+		t.Errorf("roster leaks session state: %s", data)
+	}
+	if !strings.Contains(pmSection(), "message_agent pm-roshi") {
+		t.Errorf("agents' PM section does not address roshi:\n%s", pmSection())
+	}
+
+	if _, err := RemovePM(DefaultPMName); err != nil {
+		t.Fatal(err)
+	}
+	roster, _ = ReadPMRoster()
+	if len(roster) != 1 || roster[0].Name != "roshi" || !roster[0].Top {
+		t.Errorf("after removing the top PM, roster = %+v; want roshi alone, on top", roster)
+	}
+}
+
+// Without a roster the agents listing still says how PMs are addressed.
+func TestPMSectionWithoutARoster(t *testing.T) {
+	testutil.IsolateHome(t)
+	if got := pmSection(); !strings.Contains(got, "`pm-<name>`") {
+		t.Errorf("pmSection() = %q; want the address pattern", got)
+	}
+}
+
+// Tree agents read the roster and nothing else of the PMs': not the registry,
+// and not the roster for writing, or one could redirect another's reports.
+func TestTreeAgentsReadOnlyTheRoster(t *testing.T) {
+	testutil.IsolateHome(t)
+	inst := &Instance{Name: "t", Root: t.TempDir(), Members: []Member{{Alias: "a", Path: t.TempDir()}}}
+	for name, g := range map[string]struct{ allow, read []string }{
+		"tree":   {TreeGrants(&Config{}, inst).Allow, TreeGrants(&Config{}, inst).Read},
+		"member": {MemberGrants(&Config{}, inst, "a").Allow, MemberGrants(&Config{}, inst, "a").Read},
+	} {
+		if !strings.Contains(strings.Join(g.read, " "), RosterDir()) {
+			t.Errorf("%s: Read = %v, want the roster", name, g.read)
+		}
+		for _, p := range append(append([]string{}, g.allow...), g.read...) {
+			if p == PMDir() || p == StateRoot() {
+				t.Errorf("%s: granted %q — the PM registry is not a tree agent's", name, p)
+			}
+		}
+		for _, p := range g.allow {
+			if p == RosterDir() {
+				t.Errorf("%s: the roster is writable", name)
+			}
+		}
+	}
+}
+
+// A launch's refresh writes what the registry says now.
+func TestPublishPMRoster(t *testing.T) {
+	testutil.IsolateHome(t)
+	if _, err := AddPM("roshi", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(PMRosterPath()); err != nil {
+		t.Fatal(err)
+	}
+	if err := PublishPMRoster(); err != nil {
+		t.Fatal(err)
+	}
+	if roster, err := ReadPMRoster(); err != nil || len(roster) != 2 {
+		t.Errorf("roster = %+v, %v; want both PMs", roster, err)
+	}
+}

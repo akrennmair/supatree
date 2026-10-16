@@ -111,8 +111,28 @@ func init() {
 	stackAddCmd.Flags().StringVar(&stackAddAs, "as", "", "alias for the member (default: the repository name)")
 	stackCloneCmd.Flags().StringVar(&stackCloneAs, "as", "", "name to register the stack under (default: the repository name)")
 	stackCloneCmd.Flags().StringVar(&stackPath, "path", "", "where to clone the stack repo (default: ~/supatree/stacks/<name>)")
-	stackCmd.AddCommand(stackNewCmd, stackAddCmd, stackRmCmd, stackDepCmd, stackCloneCmd, stackPinCmd)
+	stackCmd.AddCommand(stackNewCmd, stackAddCmd, stackRmCmd, stackDepCmd, stackCloneCmd, stackPinCmd, stackUpgradeCmd)
 	rootCmd.AddCommand(stackCmd)
+}
+
+var stackUpgradeCmd = &cobra.Command{
+	Use:   "upgrade <stack>",
+	Short: "Replace an unedited old AGENTS.md template with the current one (committed to the stack repo)",
+	Long: "upgrade replaces the stack's AGENTS.md when it is an unedited copy of a template\n" +
+		"an older supatree scaffolded, keeping whatever you added below it. Supatree's\n" +
+		"conventions now live in each tree's generated .supatree/info.md, so the new\n" +
+		"template only points there. A copy you edited is left alone, with a note on\n" +
+		"what to trim. `supatree doctor` says which stacks need it. The commit is\n" +
+		"published like `stack add`'s.",
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		res, err := stCfg.UpgradeAgentsMD(args[0], supatree.ByHuman)
+		done := "upgraded " + args[0] + "'s " + supatree.AgentsMDName
+		if err == nil && res.Commit == "" {
+			done = args[0] + "'s " + supatree.AgentsMDName + " is already current"
+		}
+		return reportStackEdit(done, res, err)
+	},
 }
 
 var stackPinCmd = &cobra.Command{

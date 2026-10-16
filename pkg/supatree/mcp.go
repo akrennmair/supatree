@@ -142,7 +142,7 @@ func MCPServer(version string) *mcp.Server {
 			},
 			{
 				Name:        "agents",
-				Description: "List the agents attached to a supatree: their names, models, bus addresses and whether each is reachable now. Use an address with your own message-bus tool to reach one directly.",
+				Description: "List the agents attached to a supatree: their names, models, bus addresses and whether each is reachable now. Use an address with your own message-bus tool to reach one directly. It also lists the PMs, with the name `message_agent` reaches each by.",
 				InputSchema: mcp.ObjectSchema(map[string]any{
 					argTree: mcp.StringProp("Supatree name (omit inside a supatree to mean your own)"),
 				}, nil),
@@ -150,9 +150,9 @@ func MCPServer(version string) *mcp.Server {
 			},
 			{
 				Name:        "message_agent",
-				Description: "Send a message to another agent in this supatree. Always delivered to the agent's mailbox, which it reads on its next turn; pair it with your own message-bus tool (see the address from `agents`) if you need it to arrive sooner.",
+				Description: "Send a message to another agent in this supatree. Always delivered to the agent's mailbox, which it reads on its next turn; pair it with your own message-bus tool (see the address from `agents`) if you need it to arrive sooner. To reach a PM, which is in no tree, use agent `pm` for the top PM or `pm-<name>` for a named one (e.g. `pm-roshi`).",
 				InputSchema: mcp.ObjectSchema(map[string]any{
-					"agent": mcp.StringProp("Agent name within the supatree (not its bus address)"),
+					"agent": mcp.StringProp("Agent name within the supatree (not its bus address), or `pm` / `pm-<name>` for a PM"),
 					"text":  mcp.StringProp("What to tell it"),
 					argTree: mcp.StringProp("Supatree name (omit inside a supatree to mean your own)"),
 				}, []string{"agent", "text"}),
@@ -956,7 +956,7 @@ func handleAgents(args map[string]any) (string, bool) {
 		return err.Error(), true
 	}
 	if len(agents) == 0 {
-		return "no agents have been launched in this supatree yet", false
+		return "no agents have been launched in this supatree yet\n\n" + pmSection(), false
 	}
 	me := os.Getenv("SUPATREE_AGENT")
 	cfg, _ := Load()
@@ -981,7 +981,32 @@ func handleAgents(args map[string]any) (string, bool) {
 		}
 		fmt.Fprintf(&b, "%s %-16s %-10s %s%s\n", marker, a.Name, a.Model, reach, pending)
 	}
+	b.WriteString("\n" + pmSection())
 	return b.String(), false
+}
+
+// pmSection ends every agents listing. PMs live in no tree's agents.yml, so
+// without it a tree agent looking for one by name finds nothing and goes
+// hunting for a CLI path its sandbox does not grant. The names come from the
+// published roster; an agent launched before there was one still gets the
+// address pattern.
+func pmSection() string {
+	const how = "message_agent reaches a PM by its agent name: `pm` is the top PM, `pm-<name>` any other.\n"
+	roster, err := ReadPMRoster()
+	if err != nil || len(roster) == 0 {
+		return "PMs (not readable here):\n  " + how
+	}
+	var b strings.Builder
+	b.WriteString("PMs:\n")
+	for _, p := range roster {
+		top := ""
+		if p.Top {
+			top = "  (top)"
+		}
+		fmt.Fprintf(&b, "  %-16s message_agent %s%s\n", p.Name, p.Agent, top)
+	}
+	b.WriteString("  " + how)
+	return b.String()
 }
 
 // busAddress is the bus name an agent can be reached at, or "" when there is
@@ -1033,7 +1058,7 @@ func handleMessageAgent(args map[string]any) (string, bool) {
 		return fmt.Sprintf("left for %s in this tree's mailbox; the watcher moves it into that PM's `requests` on its next pass, every few seconds while the watcher runs.", to), false
 	}
 	if target == nil {
-		return fmt.Sprintf("no agent named %q in supatree %q — call `agents` to see them, or `start_agent` to launch one", to, inst.Name), true
+		return fmt.Sprintf("no agent named %q in supatree %q — call `agents` to see them, or `start_agent` to launch one; a PM is addressed as `pm` or `pm-<name>`", to, inst.Name), true
 	}
 	if err := Deliver(inst.Root, to, from, text); err != nil {
 		return err.Error(), true

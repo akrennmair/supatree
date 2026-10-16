@@ -204,7 +204,7 @@ func (r StackEditResult) Live() bool { return r.Commit == "" || r.Pushed || r.No
 
 // Summary says where the edit went and who will see it.
 func (r StackEditResult) Summary() string {
-	const existing = " Existing trees keep their own copy of " + SpecName + "."
+	const existing = " Existing trees keep their own copy of the stack."
 	switch {
 	case r.Commit == "":
 		return "Nothing changed."
@@ -223,39 +223,55 @@ func (r StackEditResult) Summary() string {
 // editSpec makes one edit to a stack's supatree.yml, as one commit, and
 // publishes it as far as mode allows.
 func (c *Config) editSpec(stack *Stack, mode StackEditMode, message string, edit func(*Spec) error) (StackEditResult, error) {
+	return c.editStackFile(stack, mode, SpecName, message, func(dir string) error {
+		spec, err := LoadSpec(dir)
+		if err != nil {
+			return err
+		}
+		if err := edit(spec); err != nil {
+			return err
+		}
+		return SaveSpec(dir, spec)
+	})
+}
+
+// editStackFile makes one edit to one file of a stack, as one commit, and
+// publishes it as far as mode allows. edit rewrites the file in the checkout
+// or clone it is given, or returns errNoChange.
+func (c *Config) editStackFile(stack *Stack, mode StackEditMode, file, message string, edit func(dir string) error) (StackEditResult, error) {
 	switch mode {
 	case ByWatcher:
 		if stack.Origin == "" {
 			return StackEditResult{}, fmt.Errorf("stack %s has no pinned origin, so the watcher will not publish edits to it — pin it once from a terminal: supatree stack pin %s", stack.Alias, stack.Alias)
 		}
-		return publishSpecEdit(stack.Origin, message, edit)
+		return publishStackEdit(stack.Origin, file, message, edit)
 	case InSandbox:
-		res, err := commitSpecEdit(stack.Path, message, edit)
+		res, err := commitStackEdit(stack.Path, file, message, edit)
 		if err == nil && res.Commit != "" && !res.NoOrigin {
 			res.NotPushed = fmt.Sprintf("stack %s has no pinned origin, so its edits cannot be published for you — pin it once from a terminal (supatree stack pin %s), or push the checkout", stack.Alias, stack.Alias)
 		}
 		return res, err
 	case ByHuman:
-		return editSpecByHuman(stack, message, edit)
+		return editStackByHuman(stack, file, message, edit)
 	}
 	return StackEditResult{}, fmt.Errorf("unknown stack edit mode %d", mode)
 }
 
-// editSpecByHuman publishes the edit to the stack's pinned origin, or — for a
+// editStackByHuman publishes the edit to the stack's pinned origin, or — for a
 // stack nobody has pinned — commits it to the checkout and says how to pin.
 // It never takes the origin from the checkout itself: the checkout's remotes
 // are agent-writable, and adopting one here would hand an agent the very
 // trust pinning exists to withhold.
-func editSpecByHuman(stack *Stack, message string, edit func(*Spec) error) (StackEditResult, error) {
+func editStackByHuman(stack *Stack, file, message string, edit func(dir string) error) (StackEditResult, error) {
 	if stack.Origin == "" {
-		res, err := commitSpecEdit(stack.Path, message, edit)
+		res, err := commitStackEdit(stack.Path, file, message, edit)
 		if err == nil && res.Commit != "" && !res.NoOrigin {
 			res.NotPushed = fmt.Sprintf("stack %s has no pinned origin, so the edit was only committed to %s — check the remote (git -C %s remote -v), then pin it: supatree stack pin %s <url>",
 				stack.Alias, stack.Path, stack.Path, stack.Alias)
 		}
 		return res, err
 	}
-	res, err := publishSpecEdit(stack.Origin, message, edit)
+	res, err := publishStackEdit(stack.Origin, file, message, edit)
 	if err == nil && res.Pushed {
 		// Not fast-forwarded for you: that would run git in a checkout an
 		// agent can write.
@@ -264,21 +280,21 @@ func editSpecByHuman(stack *Stack, message string, edit func(*Spec) error) (Stac
 	return res, err
 }
 
-// commitSpecEdit edits and commits supatree.yml in a checkout, staging only
-// that file and refusing one with uncommitted edits of its own.
-func commitSpecEdit(stackPath, message string, edit func(*Spec) error) (StackEditResult, error) {
+// commitStackEdit edits and commits one file in a checkout, staging only that
+// file and refusing one with uncommitted edits of its own.
+func commitStackEdit(stackPath, file, message string, edit func(dir string) error) (StackEditResult, error) {
 	var res StackEditResult
 	if err := git.RequireSafeRepo(stackPath); err != nil {
 		return res, err
 	}
-	if out, err := gitOutput(stackPath, "status", "--porcelain", "--", SpecName); err != nil {
+	if out, err := gitOutput(stackPath, "status", "--porcelain", "--", file); err != nil {
 		return res, err
 	} else if out != "" {
-		return res, fmt.Errorf("%s has uncommitted changes in %s — commit or discard them first", SpecName, stackPath)
+		return res, fmt.Errorf("%s has uncommitted changes in %s — commit or discard them first", file, stackPath)
 	}
 	_, originErr := gitOutput(stackPath, "remote", "get-url", "origin")
 	res.NoOrigin = originErr != nil
-	changed, err := applySpecEdit(stackPath, message, edit)
+	changed, err := applyStackEdit(stackPath, file, message, edit)
 	if err != nil || !changed {
 		return res, err
 	}
@@ -286,26 +302,19 @@ func commitSpecEdit(stackPath, message string, edit func(*Spec) error) (StackEdi
 	return res, nil
 }
 
-// applySpecEdit runs edit on dir's spec and commits the result, reporting
-// whether anything changed.
-func applySpecEdit(dir, message string, edit func(*Spec) error) (bool, error) {
-	spec, err := LoadSpec(dir)
-	if err != nil {
-		return false, err
-	}
-	if err := edit(spec); err != nil {
+// applyStackEdit runs edit in dir and commits file, reporting whether
+// anything changed.
+func applyStackEdit(dir, file, message string, edit func(dir string) error) (bool, error) {
+	if err := edit(dir); err != nil {
 		if errors.Is(err, errNoChange) {
 			return false, nil
 		}
 		return false, err
 	}
-	if err := SaveSpec(dir, spec); err != nil {
+	if err := runGit(dir, "add", "--", file); err != nil {
 		return false, err
 	}
-	if err := runGit(dir, "add", "--", SpecName); err != nil {
-		return false, err
-	}
-	return true, runGit(dir, "commit", "-q", "-m", message, "--", SpecName)
+	return true, runGit(dir, "commit", "-q", "-m", message, "--", file)
 }
 
 // StackEditsDir holds the private clones stack edits are made in. Under the
@@ -314,11 +323,11 @@ func StackEditsDir() string {
 	return filepath.Join(CacheDir(), "stack-edits")
 }
 
-// publishSpecEdit makes the edit in a fresh clone of origin and pushes exactly
+// publishStackEdit makes the edit in a fresh clone of origin and pushes exactly
 // that one commit to its default branch — or, when the branch refuses it, to a
 // branch with a pull request. Nothing the stack checkout holds is read, so no
 // agent-written hook, remote or commit comes along.
-func publishSpecEdit(origin, message string, edit func(*Spec) error) (StackEditResult, error) {
+func publishStackEdit(origin, file, message string, edit func(dir string) error) (StackEditResult, error) {
 	var res StackEditResult
 	if err := os.MkdirAll(StackEditsDir(), 0755); err != nil {
 		return res, err
@@ -332,7 +341,7 @@ func publishSpecEdit(origin, message string, edit func(*Spec) error) (StackEditR
 		return res, fmt.Errorf("clone the stack's origin %s: %s", origin, out)
 	}
 	def := git.DefaultBranch(dir)
-	changed, err := applySpecEdit(dir, message, edit)
+	changed, err := applyStackEdit(dir, file, message, edit)
 	if err != nil || !changed {
 		return res, err
 	}

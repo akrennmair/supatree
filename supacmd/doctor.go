@@ -13,7 +13,7 @@ import (
 
 var doctorCmd = &cobra.Command{
 	Use:   "doctor",
-	Short: "Check that supatree can launch agents: zellij, git, nono and every model's nono profile",
+	Short: "Check that supatree can launch agents (zellij, git, nono, every model's nono profile) and that stacks' AGENTS.md are current",
 	// Runs with a broken config too: it reports that rather than refusing.
 	PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -25,6 +25,9 @@ var doctorCmd = &cobra.Command{
 			cfg = c
 		}
 		results = append(results, supatree.Doctor(cfg)...)
+		if cfg != nil {
+			results = append(results, supatree.AgentsMDChecks(cfg)...)
+		}
 		for _, r := range results {
 			msg := strings.ReplaceAll(r.Message, "\n", "\n        ")
 			fmt.Printf("%-5s %s: %s\n", r.Status, r.Name, msg)

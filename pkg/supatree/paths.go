@@ -272,6 +272,19 @@ func PMDir() string {
 	return filepath.Join(StateRoot(), "pm")
 }
 
+// RosterDir holds what tree agents may know about the PMs: their names and
+// addresses, published from the registry in PMDir, which no tree agent is
+// granted. Agents get the directory read-only, not the file, so the atomic
+// replace that refreshes it does not fall outside the grant.
+func RosterDir() string {
+	return filepath.Join(StateRoot(), "roster")
+}
+
+// PMRosterPath is the published PM list, in RosterDir.
+func PMRosterPath() string {
+	return filepath.Join(RosterDir(), "pms.json")
+}
+
 // PMOffsetPath records how far the PM has read into the request queue. It lives
 // with the PM rather than with the queue because it is the reader's position,
 // not a property of the history.
