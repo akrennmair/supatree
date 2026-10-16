@@ -241,8 +241,10 @@ func OpSources(insts []*Instance) []string {
 // OpHooks lets the caller act on what an operation did with things this
 // package cannot reach (zellij tabs and layouts).
 type OpHooks struct {
-	// Removed is called after a tree has been removed.
-	Removed func(tree string, res *RemoveResult)
+	// Removed is called after a tree has been removed, and returns warnings
+	// for the answer: a removal whose tabs could not be closed must not be
+	// reported as clean.
+	Removed func(tree string, res *RemoveResult) []string
 }
 
 // RunOp carries out a claimed request. It never panics on bad input; every
@@ -349,13 +351,14 @@ func (c *Config) runRemove(op Op, res *OpResult, hooks OpHooks) error {
 	if err != nil {
 		return err
 	}
+	warnings := removed.Warnings
 	if hooks.Removed != nil {
-		hooks.Removed(op.Tree, removed)
+		warnings = append(warnings, hooks.Removed(op.Tree, removed)...)
 	}
 	res.Tree = op.Tree
 	res.Text = "removed supatree " + op.Tree
-	if len(removed.Warnings) > 0 {
-		res.Text += "\nwarnings: " + strings.Join(removed.Warnings, "; ")
+	if len(warnings) > 0 {
+		res.Text += "\nwarnings: " + strings.Join(warnings, "; ")
 	}
 	return nil
 }

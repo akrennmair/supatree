@@ -157,6 +157,11 @@ func watchRound(ctx context.Context) error {
 	deliver(ctx, cfg, evs, cur.At)
 	runSchedule(cur.At)
 	runLaunches(ctx)
+	if known, err := supatree.KnownTreeNames(cfg); err == nil {
+		for _, line := range supatree.SweepRemoved(supatreeWorkspace(), known) {
+			logWatch("sweep: %s", line)
+		}
+	}
 	return nil
 }
 
