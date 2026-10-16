@@ -145,6 +145,38 @@ var reviewForkCmd = &cobra.Command{
 	},
 }
 
+var reviewAddTree string
+
+var reviewAddCmd = &cobra.Command{
+	Use:   "add [--tree <name>] <pr-url | owner/repo#n>...",
+	Short: "Add pull requests to an existing review tree",
+	Long: "A cross-repo change grows: another pull request belonging to it turns up after\n" +
+		"its review tree exists. add checks each one out in the tree — moving an idle\n" +
+		"member onto its head, or creating the member — and keeps review.md and the\n" +
+		"reviewer's context. A member with uncommitted work or commits of its own is\n" +
+		"reported, not moved. The tree's agent is told by mail.",
+	Args: cobra.MinimumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var nameArgs []string
+		if reviewAddTree != "" {
+			nameArgs = []string{reviewAddTree}
+		}
+		name, err := resolveTreeName(nameArgs)
+		if err != nil {
+			return err
+		}
+		refs, err := supatree.ResolvePRRefs(args)
+		if err != nil {
+			return err
+		}
+		results, err := supatree.AddReview(stCfg, name, refs, "cli")
+		fmt.Println(supatree.FormatAddResults(results))
+		return err
+	},
+}
+
 func init() {
 	reviewCmd.AddCommand(reviewForkCmd)
+	reviewAddCmd.Flags().StringVar(&reviewAddTree, "tree", "", "review tree to add to (default: the one you are in)")
+	reviewCmd.AddCommand(reviewAddCmd)
 }

@@ -116,7 +116,13 @@ func memberEvents(tree string, prev, cur MemberStatus, at time.Time, mode Mode) 
 			// toggling ready-for-review, and changes→open is a re-review that
 			// the review transitions below already cover.
 			if !hasPR(prev.PR) {
-				add(EventPROpened, fmt.Sprintf("%s/%s opened PR #%d", tree, cur.Alias, prNumber(cur.PR)))
+				// In a review tree a PR appears because it was added for
+				// review (AddReview), not because anyone opened it.
+				if mode == ModeReviewing {
+					add(EventPROpened, fmt.Sprintf("%s/%s: #%d added for review", tree, cur.Alias, prNumber(cur.PR)))
+				} else {
+					add(EventPROpened, fmt.Sprintf("%s/%s opened PR #%d", tree, cur.Alias, prNumber(cur.PR)))
+				}
 			}
 		case MemberChanges:
 			// Whose verdict this is flips with the mode. On your own tree it is

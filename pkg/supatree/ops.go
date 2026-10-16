@@ -29,12 +29,13 @@ import (
 type OpKind string
 
 const (
-	OpNew    OpKind = "new"    // create a tree from a stack
-	OpReview OpKind = "review" // create a review tree for pull requests
-	OpRemove OpKind = "remove" // remove a tree
-	OpSync   OpKind = "sync"   // reconcile a tree's members with its spec
-	OpStop   OpKind = "stop"   // stop agent processes (a tree's, or orphans)
-	OpStack  OpKind = "stack"  // edit a stack: add, rm or dep a member
+	OpNew       OpKind = "new"        // create a tree from a stack
+	OpReview    OpKind = "review"     // create a review tree for pull requests
+	OpRemove    OpKind = "remove"     // remove a tree
+	OpSync      OpKind = "sync"       // reconcile a tree's members with its spec
+	OpStop      OpKind = "stop"       // stop agent processes (a tree's, or orphans)
+	OpStack     OpKind = "stack"      // edit a stack: add, rm or dep a member
+	OpReviewAdd OpKind = "review-add" // add pull requests to a review tree
 )
 
 // Stack edit actions, for OpStack.
@@ -284,6 +285,8 @@ func (c *Config) RunOp(claimed ClaimedOp, hooks OpHooks) OpResult {
 		err = runStop(op, &res)
 	case OpStack:
 		err = c.runStackEdit(op, &res)
+	case OpReviewAdd:
+		err = c.runReviewAdd(op, &res, filepath.Clean(claimed.Dir) != PMDir())
 	default:
 		err = fmt.Errorf("unknown operation %q", op.Kind)
 	}
@@ -299,7 +302,7 @@ func (c *Config) authorizeOp(claimed ClaimedOp) error {
 	if filepath.Clean(claimed.Dir) == PMDir() {
 		return nil
 	}
-	if claimed.Op.Kind != OpSync {
+	if claimed.Op.Kind != OpSync && claimed.Op.Kind != OpReviewAdd {
 		return fmt.Errorf("%s may only be requested by the PM", claimed.Op.Kind)
 	}
 	inst, err := Get(c, claimed.Op.Tree)
@@ -307,9 +310,55 @@ func (c *Config) authorizeOp(claimed ClaimedOp) error {
 		return err
 	}
 	if filepath.Clean(StateDir(inst.Root)) != filepath.Clean(claimed.Dir) {
-		return fmt.Errorf("a tree may only sync itself")
+		return fmt.Errorf("a tree may only %s itself", claimed.Op.Kind)
 	}
 	return nil
+}
+
+// runReviewAdd adds pull requests to a review tree, for its own agent or the
+// PM. In the watcher: a new member may need a clone, and resolving a PR needs
+// gh. Asked for by the tree itself, the spec it maps against is vetted as for
+// a sync — a tree may only pull in repositories its stack already has.
+func (c *Config) runReviewAdd(op Op, res *OpResult, fromTree bool) error {
+	inst, err := Get(c, op.Tree)
+	if err != nil {
+		return err
+	}
+	if fromTree {
+		if err := c.vetTreeSpec(inst); err != nil {
+			return err
+		}
+	}
+	refs, err := ResolvePRRefs(op.PRs)
+	if err != nil {
+		return err
+	}
+	from := PMAgentName
+	if fromTree {
+		from = MainAgent
+	}
+	results, err := AddReview(c, op.Tree, refs, from)
+	res.Tree = op.Tree
+	res.Text = FormatAddResults(results)
+	return err
+}
+
+// FormatAddResults renders what AddReview did.
+func FormatAddResults(results []AddResult) string {
+	var b strings.Builder
+	n := 0
+	for _, r := range results {
+		if r.Skipped != "" {
+			fmt.Fprintf(&b, "%s: not added — %s\n", r.PR, r.Skipped)
+			continue
+		}
+		n++
+		fmt.Fprintf(&b, "%s: added as repos/%s at %s\n", r.PR, r.Alias, shortSHA(r.Head))
+	}
+	if n > 0 {
+		b.WriteString("\nThe tree's agent has been told by mail. A running agent without a restart cannot commit in a member created just now; it can read it.")
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // runStackEdit edits a stack for the PM. In the watcher, not the PM's sandbox:

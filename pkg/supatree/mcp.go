@@ -124,6 +124,17 @@ func MCPServer(version string) *mcp.Server {
 				Handler:     handleReviewRefresh,
 			},
 			{
+				Name: "review_add",
+				Description: "Review trees: add more pull requests to this review tree — the same change, grown — without recreating it, so review.md and your context are kept. Each PR's repo must be a member of the stack; a member with uncommitted work or commits of its own is reported, not moved. " +
+					"The PM passes `tree` (and `asked`, below autonomy 'auto').",
+				InputSchema: mcp.ObjectSchema(map[string]any{
+					"prs":        mcp.StringProp("Pull requests to add: URLs or owner/repo#n, comma-separated"),
+					argTree:      mcp.StringProp("PM only: the review tree to add them to"),
+					argAskedName: mcp.BoolProp("PM only: the human asked for this in this turn"),
+				}, []string{"prs"}),
+				Handler: handleReviewAdd,
+			},
+			{
 				Name:        "pr_status",
 				Description: "Look up the PR status of every member branch and return an aggregate.",
 				InputSchema: mcp.EmptyObject(),
@@ -606,6 +617,39 @@ func handleReviewRefresh(map[string]any) (string, bool) {
 	return b.String(), false
 }
 
+func handleReviewAdd(args map[string]any) (string, bool) {
+	prs, _ := args["prs"].(string)
+	list := splitList(prs)
+	if len(list) == 0 {
+		return "prs is required", true
+	}
+	inst, err := resolveTree(args)
+	if err != nil {
+		return err.Error(), true
+	}
+	if !inst.Reviewing() {
+		return fmt.Sprintf("%s is not a review tree — new_tree with prs creates one.", inst.Name), true
+	}
+	dir := StateDir(inst.Root)
+	if os.Getenv("SUPATREE_PM") == "1" {
+		cfg, err := Load()
+		if err != nil {
+			return err.Error(), true
+		}
+		meta, err := LoadMeta(inst.Root)
+		if err != nil {
+			return err.Error(), true
+		}
+		if p := cfg.Resolve(meta).AsAsked(argAsked(args)); !p.AllowsMutation() {
+			return p.Deny("adding pull requests to a review tree"), true
+		}
+		dir = PMDir()
+	}
+	// The watcher does it: a new member may need a clone, and resolving each
+	// PR needs gh.
+	return opReply(RequestOp(dir, Op{Kind: OpReviewAdd, Tree: inst.Name, PRs: list}, opTimeout))
+}
+
 func shortSHA(sha string) string {
 	if len(sha) > 8 {
 		return sha[:8]
@@ -1062,6 +1106,7 @@ var recallTools = map[string]bool{
 // dualTools act on one supatree but can be told which, so they serve an agent
 // inside a tree and the PM outside every tree alike.
 var dualTools = map[string]bool{
+	"review_add":    true,
 	"agents":        true,
 	"message_agent": true,
 	"inbox":         true,

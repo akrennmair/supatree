@@ -1,6 +1,7 @@
 package supatree
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -384,5 +385,85 @@ func TestNewReviewRefusesAMemberThatWasNeverPushed(t *testing.T) {
 	}
 	if m := inst.FindMember("b"); m == nil || m.Review == nil {
 		t.Errorf("member b = %+v, want it under review", m)
+	}
+}
+
+// #12: a PR added to an existing review tree moves the idle member onto its
+// head, keeps what was there, refuses over work, and tells the agent.
+func TestAddReview(t *testing.T) {
+	c, _, b := reviewStackFixture(t)
+	stack := c.FindStack("s").Path
+	spec, _ := LoadSpec(stack)
+	spec.Members["b"] = b
+	if err := SaveSpec(stack, spec); err != nil {
+		t.Fatal(err)
+	}
+	run(t, stack, "commit", "-q", "-am", "add b")
+	run(t, stack, "push", "-q", "origin", "HEAD:main")
+	// A commit on b's PR head that its default branch does not have, so the
+	// move is visible.
+	run(t, b, "commit", "-q", "--allow-empty", "-m", "pr work")
+	run(t, b, "update-ref", "refs/pull/1/head", "HEAD")
+	run(t, b, "reset", "-q", "--hard", "HEAD~1")
+	prHead, _ := gitOutput(b, "rev-parse", "refs/pull/1/head")
+
+	inst, _, err := NewReview(c, ReviewOptions{Stack: "s", Name: "rev",
+		PRs: []ReviewRef{{Repo: "o/a", Number: 1, URL: "https://github.com/o/a/pull/1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(StateDir(inst.Root), "review.md"), "notes so far\n")
+	memberB := MemberPath(inst.Root, "b")
+
+	// Uncommitted work on the bystander: reported, not reset.
+	writeFile(t, filepath.Join(memberB, "scratch.txt"), "mine\n")
+	run(t, memberB, "add", "scratch.txt")
+	prB := ReviewRef{Repo: "o/b", Number: 1, URL: "https://github.com/o/b/pull/1"}
+	res, err := AddReview(c, "rev", []ReviewRef{prB}, PMAgentName)
+	if err != nil || len(res) != 1 || !strings.Contains(res[0].Skipped, "uncommitted") {
+		t.Fatalf("add over uncommitted work: %+v, %v", res, err)
+	}
+	run(t, memberB, "reset", "-q", "--hard")
+
+	res, err = AddReview(c, "rev", []ReviewRef{
+		prB,
+		{Repo: "o/a", Number: 1, URL: "https://github.com/o/a/pull/1"},
+		{Repo: "o/a", Number: 2, URL: "https://github.com/o/a/pull/2"},
+		{Repo: "o/nope", Number: 3, URL: "https://github.com/o/nope/pull/3"},
+	}, PMAgentName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res[0].Skipped != "" || res[0].Alias != "b" || res[0].Head != prHead {
+		t.Errorf("o/b#1: %+v, want it added at %s", res[0], prHead)
+	}
+	for i, want := range []string{"already in this tree", "one pull request per repo", "no member of this stack"} {
+		if !strings.Contains(res[i+1].Skipped, want) {
+			t.Errorf("result %d = %+v, want skipped: %s", i+1, res[i+1], want)
+		}
+	}
+	if head, _ := gitOutput(memberB, "rev-parse", "HEAD"); head != prHead {
+		t.Errorf("member b is at %s, want the PR head %s", head, prHead)
+	}
+	after, _ := LoadInstance(inst.Root)
+	if m := after.FindMember("b"); m == nil || m.Review == nil || m.Review.Number != 1 {
+		t.Errorf("b is not recorded as under review: %+v", m)
+	}
+	if body, _ := os.ReadFile(filepath.Join(StateDir(inst.Root), "review.md")); string(body) != "notes so far\n" {
+		t.Errorf("review.md = %q, want it kept", body)
+	}
+	msgs, _ := Mail(inst.Root, MainAgent)
+	if len(msgs) == 0 || !strings.Contains(msgs[len(msgs)-1].Text, "https://github.com/o/b/pull/1") {
+		t.Errorf("the agent was not told about the added PR: %+v", msgs)
+	}
+}
+
+// A review tree's PR that appears is one added for review, not opened.
+func TestAddedReviewPREventText(t *testing.T) {
+	prev := MemberStatus{Alias: "b", State: MemberIdle}
+	cur := MemberStatus{Alias: "b", State: MemberOpen, PR: &github.PRInfo{Number: 7, Status: github.PROpen}}
+	evs := memberEvents("rev", prev, cur, time.Now(), ModeReviewing)
+	if len(evs) != 1 || !strings.Contains(evs[0].Text, "added for review") {
+		t.Errorf("events = %+v", evs)
 	}
 }

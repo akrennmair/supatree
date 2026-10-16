@@ -128,6 +128,9 @@ version:
 - ` + "`review_refresh`" + ` re-fetches the heads when an author pushes. Do it
   before posting: comments anchored to a commit they have passed are marked
   outdated the moment they land.
+- ` + "`review_add`" + ` adds a pull request that turns out to belong to this change
+  (a description links it, a consumer needs it) to this tree, beside the
+  others, rather than reviewing it apart.
 - ` + "`review_post`" + ` submits one batched review with inline comments, as
   COMMENT, REQUEST_CHANGES or APPROVE. It publishes in the user's name; review
   trees may post unless the human turned ` + "`outward`" + ` off. If it is

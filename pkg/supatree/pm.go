@@ -145,6 +145,10 @@ routed to it.
   ` + "`asked`" + ` when the human asked you to in this turn (see below). Pass
   ` + "`start`" + ` (and a ` + "`brief`" + `) to have the new tree's agent launched and
   working without the human touching it.
+- ` + "`review_add`" + ` — add pull requests to an existing review tree (pass ` + "`tree`" + `), when a
+  change grows after its review tree exists. Better than a second tree or a
+  recreated one: the reviewer keeps its context and checks the new PR against
+  the others side by side. Same autonomy rule as ` + "`new_tree`" + `.
 - ` + "`start_agent`" + ` — launch an agent in an existing tree, briefed. The brief
   goes to its mailbox and it starts with an instruction to read it; an agent
   already running is woken in place to read it now. The result says which

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"sort"
@@ -427,4 +428,149 @@ func ForkReview(c *Config, name string) ([]ForkResult, error) {
 		_ = WriteInfo(updated)
 	}
 	return out, nil
+}
+
+// AddResult reports what adding one pull request to a review tree did.
+type AddResult struct {
+	PR    string // owner/repo#number
+	Alias string
+	Head  string
+	// Skipped says the pull request was not added, and why.
+	Skipped string
+}
+
+// AddReview adds pull requests to an existing review tree (#12). A cross-repo
+// change grows after its review tree exists — another PR turns up — and the
+// alternatives were both poor: recreating the tree throws away review.md and
+// the reviewer's context, and a second tree loses the side-by-side check that
+// is the point of having one.
+//
+// Each PR is mapped against the tree's own spec. A member already in the tree
+// but tracking nothing is moved onto the PR head — refused if it has
+// uncommitted work or commits of its own, as refresh refuses; a member not yet
+// checked out is created at the head. The tree's agent is told by mail, and
+// its state returns to reviewing on the next round while any added PR is open.
+func AddReview(c *Config, name string, prs []ReviewRef, from string) ([]AddResult, error) {
+	inst, err := Get(c, name)
+	if err != nil {
+		return nil, err
+	}
+	meta, err := LoadMeta(inst.Root)
+	if err != nil {
+		return nil, err
+	}
+	if !meta.Reviewing() {
+		return nil, fmt.Errorf("%s is not a review tree — create one with: supatree review <pr>…", name)
+	}
+	spec, err := LoadSpec(inst.Root)
+	if err != nil {
+		return nil, err
+	}
+	if meta.Review == nil {
+		meta.Review = map[string]ReviewRef{}
+	}
+
+	var out []AddResult
+	added := map[string]ReviewRef{}
+	for _, pr := range prs {
+		res := AddResult{PR: fmt.Sprintf("%s#%d", pr.Repo, pr.Number)}
+		alias, err := aliasForRepo(pr.Repo, spec.Members)
+		if err != nil {
+			res.Skipped = err.Error()
+			out = append(out, res)
+			continue
+		}
+		res.Alias = alias
+		if prev, tracked := meta.Review[alias]; tracked {
+			if prev.Number == pr.Number {
+				res.Skipped = "already in this tree — review_refresh moves it to the latest head"
+			} else {
+				res.Skipped = fmt.Sprintf("repo %q already tracks #%d — a review tree holds one pull request per repo", alias, prev.Number)
+			}
+			out = append(out, res)
+			continue
+		}
+		path := MemberPath(inst.Root, alias)
+		var sha string
+		if _, statErr := os.Stat(path); statErr == nil {
+			sha, err = moveBystanderToPR(path, pr)
+		} else {
+			sha, err = createReviewMember(c, inst.Root, meta, alias, spec.Members[alias], pr)
+		}
+		if err != nil {
+			res.Skipped = err.Error()
+			out = append(out, res)
+			continue
+		}
+		pr.Head = sha
+		res.Head = sha
+		meta.Review[alias] = pr
+		added[alias] = pr
+		// Saved per PR: a later one failing must not lose the ones that
+		// already moved a worktree.
+		if err := meta.Save(inst.Root); err != nil {
+			return out, fmt.Errorf("save meta: %w", err)
+		}
+		out = append(out, res)
+	}
+	if len(added) == 0 {
+		return out, nil
+	}
+	seedPRCache(added)
+	if updated, err := LoadInstance(inst.Root); err == nil {
+		_ = WriteInfo(updated)
+	}
+	_ = Deliver(inst.Root, MainAgent, from, addedBrief(added))
+	return out, nil
+}
+
+// moveBystanderToPR moves a member that tracks no PR onto the PR head. It
+// sits on its tree-local review branch, so only its commit changes — but never
+// over work: uncommitted changes, or commits of its own on top of the default
+// branch, are the reviewer's, and are reported instead.
+func moveBystanderToPR(path string, pr ReviewRef) (string, error) {
+	if git.IsDirty(path) {
+		return "", errors.New("uncommitted changes here — commit or discard them, then add it again")
+	}
+	if n, err := git.CommitsAhead(path); err == nil && n > 0 {
+		return "", fmt.Errorf("%d commit(s) of its own on this member — it is not idle, so it is not moved", n)
+	}
+	sha, err := git.FetchRef(path, fmt.Sprintf("refs/pull/%d/head", pr.Number))
+	if err != nil {
+		return "", err
+	}
+	return sha, resetTo(path, sha)
+}
+
+// createReviewMember checks a member out at the PR head, as creating the
+// review tree would have.
+func createReviewMember(c *Config, root string, meta *Meta, alias, url string, pr ReviewRef) (string, error) {
+	repo, err := c.ResolveMember(alias, url)
+	if err != nil {
+		return "", err
+	}
+	meta.Review[alias] = pr
+	if err := createMember(repo, MemberPath(root, alias), meta, alias, &SyncReport{}); err != nil {
+		delete(meta.Review, alias)
+		return "", err
+	}
+	return gitOutput(MemberPath(root, alias), "rev-parse", "HEAD")
+}
+
+// addedBrief tells the tree's agent what it now also has to review.
+func addedBrief(added map[string]ReviewRef) string {
+	aliases := make([]string, 0, len(added))
+	for a := range added {
+		aliases = append(aliases, a)
+	}
+	sort.Strings(aliases)
+	var b strings.Builder
+	b.WriteString("More pull requests were added to this review tree — the same change, grown:\n")
+	for _, a := range aliases {
+		pr := added[a]
+		fmt.Fprintf(&b, "  repos/%s — %s at %s\n", a, pr.URL, shortSHA(pr.Head))
+	}
+	b.WriteString("\nReview them as part of the change you already reviewed: check them against the other repos " +
+		"side by side, and note whether they change any verdict you posted. .supatree/info.md lists every PR.")
+	return b.String()
 }
