@@ -23,18 +23,18 @@ import (
 
 // StackAdd adds a member to a stack. The repository is cloned into the cache
 // first, when clone is set, so the first tree does not pay for it.
-func (c *Config) StackAdd(stackAlias, alias, url string, clone bool) error {
+func (c *Config) StackAdd(stackAlias, alias, url string, clone bool, mode StackEditMode) (StackEditResult, error) {
 	stack := c.FindStack(stackAlias)
 	if stack == nil {
-		return fmt.Errorf("stack %q not found", stackAlias)
+		return StackEditResult{}, fmt.Errorf("stack %q not found", stackAlias)
 	}
 	if err := git.ValidateName(alias, nil); err != nil {
-		return fmt.Errorf("invalid member alias %q: %w", alias, err)
+		return StackEditResult{}, fmt.Errorf("invalid member alias %q: %w", alias, err)
 	}
 	if _, err := CacheKey(url); err != nil {
-		return err
+		return StackEditResult{}, err
 	}
-	return editSpec(stack.Path, "supatree: add "+alias, func(s *Spec) error {
+	return c.editSpec(stack, mode, "supatree: add "+alias, func(s *Spec) error {
 		if prev, ok := s.Members[alias]; ok {
 			if prev == url {
 				return errNoChange
@@ -45,6 +45,13 @@ func (c *Config) StackAdd(stackAlias, alias, url string, clone bool) error {
 			if sameRepo(u, url) {
 				return fmt.Errorf("%s is already a member, as %q", url, a)
 			}
+		}
+		// s is the pinned origin's spec, read in the watcher's private clone,
+		// so the owners it vouches for are ones a human put there.
+		if mode == ByWatcher && !ownerVouchedFor(url, stack.Origin, s) {
+			return fmt.Errorf("%s is not under an owner this stack already uses — the watcher clones with your credentials, "+
+				"so a PM may only add repositories alongside the stack's existing ones; add it from a terminal: supatree stack add %s %s",
+				url, stack.Alias, url)
 		}
 		if clone {
 			if _, err := c.ResolveMember(alias, url); err != nil {
@@ -59,14 +66,39 @@ func (c *Config) StackAdd(stackAlias, alias, url string, clone bool) error {
 	})
 }
 
+// ownerVouchedFor reports whether url's host and owner are already in the
+// stack: a member's, or the pinned origin's own. A PM-requested member is
+// cloned — now or by the first tree to need it — with the human's
+// credentials, which reach every private repository they can; this keeps a
+// PM to the organisations the stack already works in.
+func ownerVouchedFor(url, origin string, s *Spec) bool {
+	want, ok := resolveRemote(url)
+	if !ok {
+		return false
+	}
+	same := func(u string) bool {
+		r, ok := resolveRemote(u)
+		return ok && strings.EqualFold(r.Host, want.Host) && strings.EqualFold(r.Owner, want.Owner)
+	}
+	if same(origin) {
+		return true
+	}
+	for _, u := range s.Members {
+		if same(u) {
+			return true
+		}
+	}
+	return false
+}
+
 // StackRm removes a member from a stack, and every dependency edge that names
 // it. Existing trees keep the member until they sync with prune.
-func (c *Config) StackRm(stackAlias, alias string) error {
+func (c *Config) StackRm(stackAlias, alias string, mode StackEditMode) (StackEditResult, error) {
 	stack := c.FindStack(stackAlias)
 	if stack == nil {
-		return fmt.Errorf("stack %q not found", stackAlias)
+		return StackEditResult{}, fmt.Errorf("stack %q not found", stackAlias)
 	}
-	return editSpec(stack.Path, "supatree: remove "+alias, func(s *Spec) error {
+	return c.editSpec(stack, mode, "supatree: remove "+alias, func(s *Spec) error {
 		if _, ok := s.Members[alias]; !ok {
 			return fmt.Errorf("%q is not a member of %s (members: %s)", alias, stackAlias, strings.Join(s.Aliases(), ", "))
 		}
@@ -90,12 +122,12 @@ func (c *Config) StackRm(stackAlias, alias string) error {
 }
 
 // StackDep records that from depends on to: to's pull request merges first.
-func (c *Config) StackDep(stackAlias, from, to string) error {
+func (c *Config) StackDep(stackAlias, from, to string, mode StackEditMode) (StackEditResult, error) {
 	stack := c.FindStack(stackAlias)
 	if stack == nil {
-		return fmt.Errorf("stack %q not found", stackAlias)
+		return StackEditResult{}, fmt.Errorf("stack %q not found", stackAlias)
 	}
-	return editSpec(stack.Path, fmt.Sprintf("supatree: %s depends on %s", from, to), func(s *Spec) error {
+	return c.editSpec(stack, mode, fmt.Sprintf("supatree: %s depends on %s", from, to), func(s *Spec) error {
 		for _, a := range []string{from, to} {
 			if _, ok := s.Members[a]; !ok {
 				return fmt.Errorf("%q is not a member of %s", a, stackAlias)
@@ -124,46 +156,245 @@ func (c *Config) StackDep(stackAlias, from, to string) error {
 // errNoChange makes an edit that would change nothing succeed quietly.
 var errNoChange = errors.New("no change")
 
-func editSpec(stackPath, message string, edit func(*Spec) error) error {
+// StackEditMode is who is making a stack edit, which decides what it may trust.
+//
+// The stack checkout is writable by the PM (it keeps notes there) and by every
+// tree agent (a tree is a worktree of it, sharing its .git). So its remotes,
+// its hooks and its unpushed commits are all things a sandboxed agent may have
+// written. An edit made outside any sandbox must not run git there, push to a
+// remote named there, or publish a commit found there.
+type StackEditMode int
+
+const (
+	// ByHuman is the CLI: someone at the keyboard. It publishes to the origin
+	// the human pinned (supatree stack pin, or stack clone), and otherwise
+	// commits to the checkout only.
+	ByHuman StackEditMode = iota
+	// ByWatcher is the watcher acting for the PM. It trusts only the pinned
+	// origin, and works in a private clone of it: the checkout is never read.
+	ByWatcher
+	// InSandbox is the PM itself, for a stack with no pinned origin: the edit
+	// is committed to the checkout and goes no further.
+	InSandbox
+)
+
+// StackEditResult is where a stack edit ended up. New builds every tree from
+// the stack's origin, so an edit that is only committed locally is invisible to
+// the next tree — the gap #17 fell into. Publishing is part of the edit.
+type StackEditResult struct {
+	Commit string // the edit's commit; "" when nothing changed
+	// Pushed is set when the edit is on origin's default branch, where New
+	// reads it.
+	Pushed bool
+	// Branch and PRURL are set when the default branch refused the push and
+	// the edit went to a branch, with a pull request when one could be opened.
+	Branch string
+	PRURL  string
+	// NoOrigin: the stack has no remote, so its local default branch is what
+	// trees are built from and the commit is all there is to do.
+	NoOrigin bool
+	// NotPushed says why the edit is not on the default branch, when it is not.
+	NotPushed string
+	// CheckoutNote tells the human their stack checkout is behind the edit.
+	CheckoutNote string
+}
+
+// Live reports whether the next tree made from the stack will see the edit.
+func (r StackEditResult) Live() bool { return r.Commit == "" || r.Pushed || r.NoOrigin }
+
+// Summary says where the edit went and who will see it.
+func (r StackEditResult) Summary() string {
+	const existing = " Existing trees keep their own copy of " + SpecName + "."
+	switch {
+	case r.Commit == "":
+		return "Nothing changed."
+	case r.NoOrigin:
+		return "Committed to the stack (it has no remote, so new trees are built from this checkout)." + existing
+	case r.Pushed:
+		return "Pushed to the stack's default branch; new trees get it." + existing + r.CheckoutNote
+	case r.PRURL != "":
+		return fmt.Sprintf("The default branch refused a direct push, so it is in a pull request: %s. New trees get it once that merges.", r.PRURL)
+	case r.Branch != "":
+		return fmt.Sprintf("The default branch refused a direct push; pushed branch %s, but could not open a pull request (%s). New trees get it once it is merged.", r.Branch, r.NotPushed)
+	}
+	return fmt.Sprintf("Committed (%s) but NOT published: %s. New trees are built from the stack's origin and will not see it until it is.", shortSHA(r.Commit), r.NotPushed)
+}
+
+// editSpec makes one edit to a stack's supatree.yml, as one commit, and
+// publishes it as far as mode allows.
+func (c *Config) editSpec(stack *Stack, mode StackEditMode, message string, edit func(*Spec) error) (StackEditResult, error) {
+	switch mode {
+	case ByWatcher:
+		if stack.Origin == "" {
+			return StackEditResult{}, fmt.Errorf("stack %s has no pinned origin, so the watcher will not publish edits to it — pin it once from a terminal: supatree stack pin %s", stack.Alias, stack.Alias)
+		}
+		return publishSpecEdit(stack.Origin, message, edit)
+	case InSandbox:
+		res, err := commitSpecEdit(stack.Path, message, edit)
+		if err == nil && res.Commit != "" && !res.NoOrigin {
+			res.NotPushed = fmt.Sprintf("stack %s has no pinned origin, so its edits cannot be published for you — pin it once from a terminal (supatree stack pin %s), or push the checkout", stack.Alias, stack.Alias)
+		}
+		return res, err
+	case ByHuman:
+		return editSpecByHuman(stack, message, edit)
+	}
+	return StackEditResult{}, fmt.Errorf("unknown stack edit mode %d", mode)
+}
+
+// editSpecByHuman publishes the edit to the stack's pinned origin, or — for a
+// stack nobody has pinned — commits it to the checkout and says how to pin.
+// It never takes the origin from the checkout itself: the checkout's remotes
+// are agent-writable, and adopting one here would hand an agent the very
+// trust pinning exists to withhold.
+func editSpecByHuman(stack *Stack, message string, edit func(*Spec) error) (StackEditResult, error) {
+	if stack.Origin == "" {
+		res, err := commitSpecEdit(stack.Path, message, edit)
+		if err == nil && res.Commit != "" && !res.NoOrigin {
+			res.NotPushed = fmt.Sprintf("stack %s has no pinned origin, so the edit was only committed to %s — check the remote (git -C %s remote -v), then pin it: supatree stack pin %s <url>",
+				stack.Alias, stack.Path, stack.Path, stack.Alias)
+		}
+		return res, err
+	}
+	res, err := publishSpecEdit(stack.Origin, message, edit)
+	if err == nil && res.Pushed {
+		// Not fast-forwarded for you: that would run git in a checkout an
+		// agent can write.
+		res.CheckoutNote = fmt.Sprintf(" Your checkout %s is now behind its origin; pull it.", stack.Path)
+	}
+	return res, err
+}
+
+// commitSpecEdit edits and commits supatree.yml in a checkout, staging only
+// that file and refusing one with uncommitted edits of its own.
+func commitSpecEdit(stackPath, message string, edit func(*Spec) error) (StackEditResult, error) {
+	var res StackEditResult
 	if err := git.RequireSafeRepo(stackPath); err != nil {
-		return err
+		return res, err
 	}
 	if out, err := gitOutput(stackPath, "status", "--porcelain", "--", SpecName); err != nil {
-		return err
+		return res, err
 	} else if out != "" {
-		return fmt.Errorf("%s has uncommitted changes in %s — commit or discard them first", SpecName, stackPath)
+		return res, fmt.Errorf("%s has uncommitted changes in %s — commit or discard them first", SpecName, stackPath)
 	}
-	spec, err := LoadSpec(stackPath)
+	_, originErr := gitOutput(stackPath, "remote", "get-url", "origin")
+	res.NoOrigin = originErr != nil
+	changed, err := applySpecEdit(stackPath, message, edit)
+	if err != nil || !changed {
+		return res, err
+	}
+	res.Commit, _ = gitOutput(stackPath, "rev-parse", "HEAD")
+	return res, nil
+}
+
+// applySpecEdit runs edit on dir's spec and commits the result, reporting
+// whether anything changed.
+func applySpecEdit(dir, message string, edit func(*Spec) error) (bool, error) {
+	spec, err := LoadSpec(dir)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if err := edit(spec); err != nil {
 		if errors.Is(err, errNoChange) {
-			return nil
+			return false, nil
 		}
-		return err
+		return false, err
 	}
-	if err := SaveSpec(stackPath, spec); err != nil {
-		return err
+	if err := SaveSpec(dir, spec); err != nil {
+		return false, err
 	}
-	if err := runGit(stackPath, "add", "--", SpecName); err != nil {
-		return err
+	if err := runGit(dir, "add", "--", SpecName); err != nil {
+		return false, err
 	}
-	return runGit(stackPath, "commit", "-q", "-m", message, "--", SpecName)
+	return true, runGit(dir, "commit", "-q", "-m", message, "--", SpecName)
 }
 
-// StackEditNote says where a stack edit went and what will see it. editSpec
-// commits to the local checkout and never pushes, while New builds every tree
-// from the stack's origin and Sync reads the tree's own copy of the spec — so
-// "trees get it on their next sync" was never true, and saying it is what let
-// a PM believe an unpushed member was live (#17).
-func (c *Config) StackEditNote(stack string) string {
-	path := stack
-	if s := c.FindStack(stack); s != nil {
-		path = s.Path
+// StackEditsDir holds the private clones stack edits are made in. Under the
+// cache, beside the layouts, and like them granted to no sandbox.
+func StackEditsDir() string {
+	return filepath.Join(CacheDir(), "stack-edits")
+}
+
+// publishSpecEdit makes the edit in a fresh clone of origin and pushes exactly
+// that one commit to its default branch — or, when the branch refuses it, to a
+// branch with a pull request. Nothing the stack checkout holds is read, so no
+// agent-written hook, remote or commit comes along.
+func publishSpecEdit(origin, message string, edit func(*Spec) error) (StackEditResult, error) {
+	var res StackEditResult
+	if err := os.MkdirAll(StackEditsDir(), 0755); err != nil {
+		return res, err
 	}
-	return fmt.Sprintf("Committed to the stack's local checkout (%s) only — not pushed. New trees are built from its origin, so push it before a tree needs this; existing trees keep their own copy of %s.",
-		path, SpecName)
+	dir, err := os.MkdirTemp(StackEditsDir(), "edit-")
+	if err != nil {
+		return res, err
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	if out, err := netGit("", "clone", "-q", "--", origin, dir); err != nil {
+		return res, fmt.Errorf("clone the stack's origin %s: %s", origin, out)
+	}
+	def := git.DefaultBranch(dir)
+	changed, err := applySpecEdit(dir, message, edit)
+	if err != nil || !changed {
+		return res, err
+	}
+	res.Commit, _ = gitOutput(dir, "rev-parse", "HEAD")
+	out, pushErr := netGit(dir, "push", "-q", "origin", "HEAD:refs/heads/"+def)
+	if pushErr == nil {
+		res.Pushed = true
+		return res, nil
+	}
+	res.NotPushed = "git push: " + out
+	branch := "supatree/stack-edit-" + time.Now().UTC().Format("20060102-150405")
+	if _, err := netGit(dir, "push", "-q", "origin", "HEAD:refs/heads/"+branch); err != nil {
+		return res, nil // unreachable, not protected: reported as not published
+	}
+	res.Branch = branch
+	url, err := openStackPR(dir, branch, def, message)
+	if err != nil {
+		res.NotPushed = err.Error()
+		return res, nil
+	}
+	res.PRURL = url
+	return res, nil
+}
+
+// stackNetTimeout bounds each network step of publishing a stack edit. The
+// watcher answers ops one at a time, so a hung push would stall every other
+// request behind it.
+const stackNetTimeout = 5 * time.Minute
+
+// netGit runs a git command that talks to a remote: bounded, and never
+// stopping to ask for credentials. It returns the trimmed combined output.
+func netGit(dir string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), stackNetTimeout)
+	defer cancel()
+	if dir != "" {
+		args = append([]string{"-C", dir}, args...)
+	}
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Stdin = nil
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
+// openStackPR is swappable in tests, which have no GitHub.
+var openStackPR = func(dir, branch, base, title string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), stackNetTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "gh", "pr", "create",
+		"--head", branch, "--base", base, "--title", title,
+		"--body", "Opened by supatree: the stack's default branch refused a direct push of this edit.")
+	cmd.Dir = dir
+	cmd.Stdin = nil
+	out, err := cmd.Output()
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && len(exit.Stderr) > 0 {
+			return "", fmt.Errorf("gh pr create: %s", strings.TrimSpace(string(exit.Stderr)))
+		}
+		return "", fmt.Errorf("gh pr create: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // sameRepo reports whether two URLs name one repository.
@@ -215,6 +446,11 @@ func (c *Config) StackClone(url, alias, pathOverride string) (*StackCloneResult,
 		return nil, err
 	}
 	if err := AddStack(alias, dest); err != nil {
+		return nil, err
+	}
+	// The URL the human gave is the stack's origin; pin it before any agent
+	// has had a chance to write the checkout's remotes.
+	if err := PinStackOrigin(alias, AbsGitURL(url, "")); err != nil {
 		return nil, err
 	}
 	res := &StackCloneResult{Alias: alias, Path: dest}

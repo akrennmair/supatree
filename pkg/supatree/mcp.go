@@ -264,10 +264,10 @@ func MCPServer(version string) *mcp.Server {
 			},
 			{
 				Name:        "stack_add",
-				Description: "PM: add a member repo to a stack, committed to the stack's local checkout (not pushed — new trees are built from its origin, so the stack must be pushed before they see it); the repository is cloned when a tree first needs it. Needs autonomy 'auto' to do unasked, or `asked`.",
+				Description: "PM: add a member repo to a stack. The watcher commits it, pushes it to the stack's default branch (or opens a pull request if that branch refuses pushes) and clones the repository; the answer says whether new trees will see it, and is an error when they will not. Existing trees keep their own copy of the spec. Needs autonomy 'auto' to do unasked, or `asked`.",
 				InputSchema: mcp.ObjectSchema(map[string]any{
 					argStack:     mcp.StringProp("Stack alias"),
-					"repo":       mcp.StringProp("owner/repo (GitHub, over ssh) or a git URL"),
+					"repo":       mcp.StringProp("owner/repo (GitHub, over ssh), or git@host:owner/name / https://host/owner/name on a host supatree already clones from"),
 					"as":         mcp.StringProp("Member alias (default: the repository name)"),
 					argAskedName: mcp.BoolProp("The human asked for this in this turn"),
 				}, []string{"stack", "repo"}),
@@ -275,7 +275,7 @@ func MCPServer(version string) *mcp.Server {
 			},
 			{
 				Name:        "stack_rm",
-				Description: "PM: remove a member from a stack (and its dependency edges), committed to the stack repo. Existing trees keep it until synced with prune. Needs autonomy 'auto' to do unasked, or `asked`.",
+				Description: "PM: remove a member from a stack (and its dependency edges), committed and pushed like stack_add. Existing trees keep it until synced with prune. Needs autonomy 'auto' to do unasked, or `asked`.",
 				InputSchema: mcp.ObjectSchema(map[string]any{
 					argStack:     mcp.StringProp("Stack alias"),
 					"alias":      mcp.StringProp("Member alias"),
@@ -285,7 +285,7 @@ func MCPServer(version string) *mcp.Server {
 			},
 			{
 				Name:        "stack_dep",
-				Description: "PM: record in a stack that member `from` depends on member `to` (to's pull request merges first), committed to the stack repo. Needs autonomy 'auto' to do unasked, or `asked`.",
+				Description: "PM: record in a stack that member `from` depends on member `to` (to's pull request merges first), committed and pushed like stack_add. Needs autonomy 'auto' to do unasked, or `asked`.",
 				InputSchema: mcp.ObjectSchema(map[string]any{
 					argStack:     mcp.StringProp("Stack alias"),
 					"from":       mcp.StringProp("The dependent member"),
@@ -1773,18 +1773,39 @@ func splitList(s string) []string {
 
 // stackEdit gates a stack edit on mutation autonomy — a stack is shared, and a
 // change to it reaches every tree made from it afterwards — and runs it.
-func stackEdit(args map[string]any, action string, edit func(*Config) error) (string, bool) {
+// stackEdit gates a stack edit on autonomy and carries it out: through the
+// watcher, which publishes it, when a human has pinned the stack's origin;
+// otherwise here, in the PM's own sandbox, as a local commit that says it went
+// no further.
+func stackEdit(args map[string]any, op Op) (string, bool) {
 	cfg, err := Load()
 	if err != nil {
 		return err.Error(), true
 	}
 	if p := cfg.Resolve(nil).AsAsked(argAsked(args)); !p.AllowsMutation() {
-		return p.Deny(action), true
+		return p.Deny("changing a stack"), true
 	}
-	if err := edit(cfg); err != nil {
+	stack := cfg.FindStack(op.Stack)
+	if stack == nil {
+		return fmt.Sprintf("stack %q not found", op.Stack), true
+	}
+	if stack.Origin != "" {
+		op.Kind = OpStack
+		return opReply(RequestOp(PMDir(), op, opTimeout))
+	}
+	var res StackEditResult
+	switch op.Action {
+	case StackActionAdd:
+		res, err = cfg.StackAdd(op.Stack, op.Alias, op.URL, false, InSandbox)
+	case StackActionRm:
+		res, err = cfg.StackRm(op.Stack, op.Alias, InSandbox)
+	case StackActionDep:
+		res, err = cfg.StackDep(op.Stack, op.Alias, op.DependsOn, InSandbox)
+	}
+	if err != nil {
 		return err.Error(), true
 	}
-	return "", false
+	return res.Summary(), !res.Live()
 }
 
 func handleStackAdd(args map[string]any) (string, bool) {
@@ -1798,43 +1819,18 @@ func handleStackAdd(args map[string]any) (string, bool) {
 	if err != nil {
 		return err.Error(), true
 	}
-	// No clone here: the repo cache is outside the PM's sandbox. The watcher
-	// clones it when a tree first needs it.
-	if out, isErr := stackEdit(args, "changing a stack", func(c *Config) error {
-		return c.StackAdd(stack, alias, url, false)
-	}); isErr {
-		return out, true
-	}
-	return fmt.Sprintf("added %s (%s) to %s. %s", alias, url, stack, stackNote(stack)), false
+	return stackEdit(args, Op{Stack: stack, Action: StackActionAdd, Alias: alias, URL: url})
 }
 
 func handleStackRm(args map[string]any) (string, bool) {
 	stack, _ := args[argStack].(string)
 	alias, _ := args["alias"].(string)
-	if out, isErr := stackEdit(args, "changing a stack", func(c *Config) error {
-		return c.StackRm(stack, alias)
-	}); isErr {
-		return out, true
-	}
-	return fmt.Sprintf("removed %s from %s. %s", alias, stack, stackNote(stack)), false
+	return stackEdit(args, Op{Stack: stack, Action: StackActionRm, Alias: alias})
 }
 
 func handleStackDep(args map[string]any) (string, bool) {
 	stack, _ := args[argStack].(string)
 	from, _ := args["from"].(string)
 	to, _ := args["to"].(string)
-	if out, isErr := stackEdit(args, "changing a stack", func(c *Config) error {
-		return c.StackDep(stack, from, to)
-	}); isErr {
-		return out, true
-	}
-	return fmt.Sprintf("%s now depends on %s in %s. %s", from, to, stack, stackNote(stack)), false
-}
-
-func stackNote(stack string) string {
-	cfg, err := Load()
-	if err != nil {
-		return ""
-	}
-	return cfg.StackEditNote(stack)
+	return stackEdit(args, Op{Stack: stack, Action: StackActionDep, Alias: from, DependsOn: to})
 }
