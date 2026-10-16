@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/panamafrancis/workbench/pkg/setup"
 )
@@ -84,20 +86,26 @@ const maxAgentsMD = 1 << 20
 
 // readAgentsMD reads a stack's AGENTS.md, refusing anything but a regular
 // file and stopping at maxAgentsMD. The checkout is agent-writable: a FIFO
-// there would hang doctor, and a link to /dev/zero would read forever.
+// there would hang doctor, and a link to /dev/zero would read forever. The
+// check is made on the open descriptor, not the path, so the file cannot be
+// swapped between them: O_NOFOLLOW refuses a link, and O_NONBLOCK keeps
+// opening a FIFO from waiting for a writer.
 func readAgentsMD(path string) ([]byte, error) {
-	info, err := os.Lstat(path)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		if errors.Is(err, syscall.ELOOP) {
+			return nil, fmt.Errorf("%s is a symlink", path)
+		}
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
 	if err != nil {
 		return nil, err
 	}
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("%s is not a regular file", path)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
 	data, err := io.ReadAll(io.LimitReader(f, maxAgentsMD+1))
 	if err != nil {
 		return nil, err

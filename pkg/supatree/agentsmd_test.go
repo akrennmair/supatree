@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -138,6 +139,13 @@ func TestReadAgentsMDRefusesNonFiles(t *testing.T) {
 	}
 	if _, err := readAgentsMD(link); err == nil {
 		t.Error("read through a symlink to /dev/zero")
+	}
+	fifo := filepath.Join(dir, "fifo")
+	if err := syscall.Mkfifo(fifo, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readAgentsMD(fifo); err == nil {
+		t.Error("read a FIFO")
 	}
 	big := filepath.Join(dir, "big")
 	if err := os.WriteFile(big, make([]byte, maxAgentsMD+1), 0644); err != nil {
