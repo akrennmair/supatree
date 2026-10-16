@@ -31,6 +31,13 @@ import (
 // addWorktree is `git worktree add -b branch path start` in repo, with every
 // filter the checkout could run pinned off.
 func addWorktree(repo, path, branch, start string) error {
+	// One commit, resolved once: a ref is agent-movable, and the filters
+	// pinned must be those of the very commit checked out.
+	sha, err := gitOutput(repo, "rev-parse", "--verify", "--quiet", start+"^{commit}")
+	if err != nil || !commitSHA.MatchString(sha) {
+		return fmt.Errorf("no commit %s in %s to check out", start, repo)
+	}
+	start = sha
 	// Checked again here, as late as possible: the keys it reports and nothing
 	// can pin (include, url.insteadOf, …) are only as safe as the gap is short.
 	if err := git.RequireSafeRepo(repo); err != nil {
@@ -146,10 +153,16 @@ func filterNames(repo, start string) ([]string, error) {
 		}
 		texts = append(texts, body)
 	}
-	if common, err := GitCommonDir(repo); err == nil {
-		if body, err := os.ReadFile(filepath.Join(common, "info", "attributes")); err == nil {
-			texts = append(texts, string(body))
-		}
+	// Unreadable is not "no filters": a checkout this cannot vouch for is refused.
+	common, err := GitCommonDir(repo)
+	if err != nil {
+		return nil, fmt.Errorf("find %s's git dir: %w", repo, err)
+	}
+	switch body, err := os.ReadFile(filepath.Join(common, "info", "attributes")); {
+	case err == nil:
+		texts = append(texts, string(body))
+	case !os.IsNotExist(err):
+		return nil, fmt.Errorf("read %s's info/attributes: %w", repo, err)
 	}
 	seen := map[string]bool{}
 	for _, t := range texts {
