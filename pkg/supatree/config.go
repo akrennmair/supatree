@@ -23,9 +23,12 @@ type Config struct {
 	// executes no third-party code but reads text other people wrote and holds
 	// credentials that reach outside the machine, so it wants a profile that is
 	// narrow on egress rather than one that is wide on the filesystem.
-	PMModelKey string  `yaml:"pm_model,omitempty"`
-	TreesBase  string  `yaml:"trees_base,omitempty"`
-	Stacks     []Stack `yaml:"stacks"`
+	PMModelKey string `yaml:"pm_model,omitempty"`
+	// PMConfig is the PM config repo (pmconfig.go): versioned instructions,
+	// skills and settings for the PMs, which they read and cannot write.
+	PMConfig  string  `yaml:"pm_config,omitempty"`
+	TreesBase string  `yaml:"trees_base,omitempty"`
+	Stacks    []Stack `yaml:"stacks"`
 	// NotifyCommand is the argv `supatree watch` runs to deliver a desktop
 	// notification, with {title} and {text} substituted. Empty uses the macOS
 	// default; Linux points it at notify-send without a code change.

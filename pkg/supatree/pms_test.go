@@ -210,8 +210,8 @@ func TestRunningPM(t *testing.T) {
 	procIsAgentExec = func(int) bool { return true }
 	t.Cleanup(func() { procIsAgentExec = orig })
 
-	registerProc(ProcRecord{PID: os.Getpid(), PM: "reviews", Session: "st-main"})
-	if r, ok := runningPM(PM{Name: "reviews"}); !ok || r.PID != os.Getpid() {
+	registerProc(ProcRecord{PID: os.Getpid(), PM: pmReviews, Session: "st-main"})
+	if r, ok := runningPM(PM{Name: pmReviews}); !ok || r.PID != os.Getpid() {
 		t.Errorf("runningPM(reviews) = %+v, %v; want the recorded process", r, ok)
 	}
 	if _, ok := runningPM(PM{Name: DefaultPMName}); ok {
@@ -226,7 +226,7 @@ func TestLaunchCaller(t *testing.T) {
 	if got := launchCaller(); got != "watcher" {
 		t.Errorf("background open: %q, want watcher", got)
 	}
-	os.Args = []string{"supatree", "pm", "reviews"}
+	os.Args = []string{"supatree", "pm", pmReviews}
 	if got := launchCaller(); got != "cli(supatree pm reviews)" {
 		t.Errorf("pm: %q", got)
 	}
