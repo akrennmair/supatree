@@ -295,6 +295,7 @@ func RemovePM(name string) (PM, error) {
 		}
 		_ = os.Remove(removed.OffsetPath())
 		_ = os.RemoveAll(MailDir(PMDir(), removed.AgentID()))
+		_ = os.Remove(mailLockPath(PMDir(), removed.AgentID()))
 		return nil
 	})
 	return removed, err

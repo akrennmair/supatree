@@ -152,6 +152,20 @@ func editSpec(stackPath, message string, edit func(*Spec) error) error {
 	return runGit(stackPath, "commit", "-q", "-m", message, "--", SpecName)
 }
 
+// StackEditNote says where a stack edit went and what will see it. editSpec
+// commits to the local checkout and never pushes, while New builds every tree
+// from the stack's origin and Sync reads the tree's own copy of the spec — so
+// "trees get it on their next sync" was never true, and saying it is what let
+// a PM believe an unpushed member was live (#17).
+func (c *Config) StackEditNote(stack string) string {
+	path := stack
+	if s := c.FindStack(stack); s != nil {
+		path = s.Path
+	}
+	return fmt.Sprintf("Committed to the stack's local checkout (%s) only — not pushed. New trees are built from its origin, so push it before a tree needs this; existing trees keep their own copy of %s.",
+		path, SpecName)
+}
+
 // sameRepo reports whether two URLs name one repository.
 func sameRepo(a, b string) bool {
 	ka, errA := CacheKey(a)

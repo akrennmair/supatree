@@ -16,10 +16,11 @@ type CreateOptions struct {
 	KeepPartial bool      // skip rollback on failure (for debugging)
 	Now         time.Time // creation timestamp (injected for determinism)
 	Intent      string    // what this supatree is for
-	// Review, when set, makes this a review tree: each entry maps a member
-	// alias to the pull request its worktree is checked out at. It must be set
-	// before the members are created, since it is what decides where they start.
-	Review map[string]ReviewRef
+	// ReviewPRs, when set, makes this a review tree checked out at these pull
+	// requests. They are mapped to members against the spec the tree is built
+	// from — origin's default branch, not the stack's local checkout — before
+	// any member is created, since that is what decides where each one starts.
+	ReviewPRs []ReviewRef
 }
 
 // New creates a supatree: a worktree of the chosen stack repo at
@@ -69,6 +70,12 @@ func finishCreate(c *Config, stack *Stack, root, name string, opts CreateOptions
 	if err != nil {
 		return nil, nil, err
 	}
+	var review map[string]ReviewRef
+	if len(opts.ReviewPRs) > 0 {
+		if review, err = mapPRsToMembers(spec, opts.ReviewPRs); err != nil {
+			return nil, nil, unpublishedMember(stack, spec, err, opts.ReviewPRs)
+		}
+	}
 	now := opts.Now
 	if now.IsZero() {
 		now = time.Now()
@@ -81,9 +88,9 @@ func finishCreate(c *Config, stack *Stack, root, name string, opts CreateOptions
 		Model:     resolveModel(opts.Model, spec, c),
 		CreatedAt: now,
 		Intent:    opts.Intent,
-		Review:    opts.Review,
+		Review:    review,
 	}
-	if len(opts.Review) > 0 {
+	if len(review) > 0 {
 		meta.Mode = ModeReviewing
 	}
 	if err := meta.Save(root); err != nil {
@@ -102,6 +109,9 @@ func finishCreate(c *Config, stack *Stack, root, name string, opts CreateOptions
 	}
 	inst, err := LoadInstance(root)
 	if err != nil {
+		return nil, report, err
+	}
+	if err := requireReviewMembers(inst, review); err != nil {
 		return nil, report, err
 	}
 	if w := RunSetup(inst); w != "" {
