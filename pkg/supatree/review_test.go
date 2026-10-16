@@ -390,7 +390,10 @@ func TestNewReviewRefusesAMemberThatWasNeverPushed(t *testing.T) {
 
 // #12: a PR added to an existing review tree moves the idle member onto its
 // head, keeps what was there, refuses over work, and tells the agent.
-func TestAddReview(t *testing.T) {
+// addReviewFixture is a review tree for o/a#1 in a stack that also has b,
+// whose PR #1 head is a commit b's default branch does not have.
+func addReviewFixture(t *testing.T) (c *Config, inst *Instance, prHead string) {
+	t.Helper()
 	c, _, b := reviewStackFixture(t)
 	stack := c.FindStack("s").Path
 	spec, _ := LoadSpec(stack)
@@ -405,13 +408,19 @@ func TestAddReview(t *testing.T) {
 	run(t, b, "commit", "-q", "--allow-empty", "-m", "pr work")
 	run(t, b, "update-ref", "refs/pull/1/head", "HEAD")
 	run(t, b, "reset", "-q", "--hard", "HEAD~1")
-	prHead, _ := gitOutput(b, "rev-parse", "refs/pull/1/head")
+	prHead, _ = gitOutput(b, "rev-parse", "refs/pull/1/head")
 
-	inst, _, err := NewReview(c, ReviewOptions{Stack: "s", Name: "rev",
+	var err error
+	inst, _, err = NewReview(c, ReviewOptions{Stack: "s", Name: "rev",
 		PRs: []ReviewRef{{Repo: "o/a", Number: 1, URL: "https://github.com/o/a/pull/1"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
+	return c, inst, prHead
+}
+
+func TestAddReview(t *testing.T) {
+	c, inst, prHead := addReviewFixture(t)
 	writeFile(t, filepath.Join(StateDir(inst.Root), "review.md"), "notes so far\n")
 	memberB := MemberPath(inst.Root, "b")
 
@@ -419,7 +428,7 @@ func TestAddReview(t *testing.T) {
 	writeFile(t, filepath.Join(memberB, "scratch.txt"), "mine\n")
 	run(t, memberB, "add", "scratch.txt")
 	prB := ReviewRef{Repo: "o/b", Number: 1, URL: "https://github.com/o/b/pull/1"}
-	res, err := AddReview(c, "rev", []ReviewRef{prB}, PMAgentName)
+	res, err := AddReview(c, "rev", []ReviewRef{prB}, PMAgentName, false)
 	if err != nil || len(res) != 1 || !strings.Contains(res[0].Skipped, "uncommitted") {
 		t.Fatalf("add over uncommitted work: %+v, %v", res, err)
 	}
@@ -430,7 +439,7 @@ func TestAddReview(t *testing.T) {
 		{Repo: "o/a", Number: 1, URL: "https://github.com/o/a/pull/1"},
 		{Repo: "o/a", Number: 2, URL: "https://github.com/o/a/pull/2"},
 		{Repo: "o/nope", Number: 3, URL: "https://github.com/o/nope/pull/3"},
-	}, PMAgentName)
+	}, PMAgentName, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -465,5 +474,23 @@ func TestAddedReviewPREventText(t *testing.T) {
 	evs := memberEvents("rev", prev, cur, time.Now(), ModeReviewing)
 	if len(evs) != 1 || !strings.Contains(evs[0].Text, "added for review") {
 		t.Errorf("events = %+v", evs)
+	}
+}
+
+// The watcher acts on repos/<alias> only when it is the worktree supatree
+// made: an agent swapping it for a link to elsewhere gets it left alone.
+func TestAddReviewRefusesARedirectedMember(t *testing.T) {
+	c, inst, _ := addReviewFixture(t)
+	member := MemberPath(inst.Root, "b")
+	elsewhere := t.TempDir()
+	if err := os.RemoveAll(member); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, member); err != nil {
+		t.Fatal(err)
+	}
+	res, err := AddReview(c, "rev", []ReviewRef{{Repo: "o/b", Number: 1, URL: "https://github.com/o/b/pull/1"}}, PMAgentName, false)
+	if err != nil || len(res) != 1 || !strings.Contains(res[0].Skipped, "not a directory supatree made") {
+		t.Errorf("add through a symlinked member: %+v, %v", res, err)
 	}
 }

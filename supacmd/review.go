@@ -169,7 +169,7 @@ var reviewAddCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		results, err := supatree.AddReview(stCfg, name, refs, "cli")
+		results, err := supatree.AddReview(stCfg, name, refs, "cli", false)
 		fmt.Println(supatree.FormatAddResults(results))
 		return err
 	},

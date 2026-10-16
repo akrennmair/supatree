@@ -324,11 +324,6 @@ func (c *Config) runReviewAdd(op Op, res *OpResult, fromTree bool) error {
 	if err != nil {
 		return err
 	}
-	if fromTree {
-		if err := c.vetTreeSpec(inst); err != nil {
-			return err
-		}
-	}
 	refs, err := ResolvePRRefs(op.PRs)
 	if err != nil {
 		return err
@@ -337,7 +332,7 @@ func (c *Config) runReviewAdd(op Op, res *OpResult, fromTree bool) error {
 	if fromTree {
 		from = MainAgent
 	}
-	results, err := AddReview(c, op.Tree, refs, from)
+	results, err := AddReview(c, inst.Name, refs, from, fromTree)
 	res.Tree = op.Tree
 	res.Text = FormatAddResults(results)
 	return err
@@ -564,24 +559,34 @@ func reportWarnings(report *SyncReport) string {
 // (as committed in the stack's own checkout, which no agent can write) nor the
 // repo cache knows.
 func (c *Config) vetTreeSpec(inst *Instance) error {
+	spec := &Spec{Members: map[string]string{}}
+	for _, m := range inst.Members {
+		spec.Members[m.Alias] = m.URL
+	}
+	return c.vetSpec(inst.Stack, spec)
+}
+
+// vetSpec checks every member of spec is in the stack or the repo cache.
+func (c *Config) vetSpec(stackAlias string, spec *Spec) error {
 	known := map[string]bool{}
-	if stack := c.FindStack(inst.Stack); stack != nil {
-		if spec, err := LoadSpec(stack.Path); err == nil {
-			for _, url := range spec.Members {
+	if stack := c.FindStack(stackAlias); stack != nil {
+		if stackSpec, err := LoadSpec(stack.Path); err == nil {
+			for _, url := range stackSpec.Members {
 				if key, err := CacheKey(url); err == nil {
 					known[key] = true
 				}
 			}
 		}
 	}
-	for _, m := range inst.Members {
-		key, err := CacheKey(m.URL)
+	for _, alias := range spec.Aliases() {
+		url := spec.Members[alias]
+		key, err := CacheKey(url)
 		if err != nil {
-			return fmt.Errorf("member %q: %w", m.Alias, err)
+			return fmt.Errorf("member %q: %w", alias, err)
 		}
 		if !known[key] && !isClone(filepath.Join(ReposDir(), key)) {
 			return fmt.Errorf("member %q (%s) is neither in stack %s nor in the repo cache — add it to the stack first: supatree stack add %s %s",
-				m.Alias, m.URL, inst.Stack, inst.Stack, m.URL)
+				alias, url, stackAlias, stackAlias, url)
 		}
 	}
 	return nil

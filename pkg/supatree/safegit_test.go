@@ -131,3 +131,32 @@ func TestFilterNamesAnyCase(t *testing.T) {
 		t.Errorf("filterNames = %v, %v; want sneaky", names, err)
 	}
 }
+
+// A replace ref an agent planted does not swap the commit that is checked out.
+func TestAddWorktreeIgnoresReplaceRefs(t *testing.T) {
+	testutil.IsolateHome(t)
+	repo := originRepo(t)
+	writeFile(t, filepath.Join(repo, "REAL.md"), "real\n")
+	run(t, repo, "add", "-A")
+	run(t, repo, "commit", "-q", "-m", "real")
+	real, _ := gitOutput(repo, "rev-parse", "HEAD")
+	run(t, repo, "checkout", "-q", "--orphan", "evil")
+	run(t, repo, "rm", "-rq", "--cached", ".")
+	writeFile(t, filepath.Join(repo, "EVIL.md"), "evil\n")
+	run(t, repo, "add", "EVIL.md")
+	run(t, repo, "commit", "-q", "-m", "evil")
+	evil, _ := gitOutput(repo, "rev-parse", "HEAD")
+	run(t, repo, "checkout", "-q", "-f", "main")
+	run(t, repo, "replace", real, evil)
+
+	wt := filepath.Join(t.TempDir(), "wt")
+	if err := addWorktree(repo, wt, "t", real); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(wt, "REAL.md")); err != nil {
+		t.Error("the replace ref substituted the commit that was checked out")
+	}
+	if _, err := os.Stat(filepath.Join(wt, "EVIL.md")); err == nil {
+		t.Error("the replacement's files were checked out")
+	}
+}

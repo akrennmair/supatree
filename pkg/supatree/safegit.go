@@ -28,6 +28,15 @@ import (
 // info/attributes — is pinned on the command line to a pass-through, which
 // outranks anything the repository's config says, whenever it says it.
 
+// init turns off git's replace objects for every git this process starts. An
+// agent can write refs/replace/ in any repository it commits to, and a replace
+// ref makes git substitute an object of the agent's choosing for the one asked
+// for — so a pinned commit would check out as whatever the agent liked. No
+// supatree workflow uses replace refs, sandboxed or not.
+func init() {
+	_ = os.Setenv("GIT_NO_REPLACE_OBJECTS", "1")
+}
+
 // addWorktree is `git worktree add -b branch path start` in repo, with every
 // filter the checkout could run pinned off.
 func addWorktree(repo, path, branch, start string) error {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -450,7 +451,7 @@ type AddResult struct {
 // uncommitted work or commits of its own, as refresh refuses; a member not yet
 // checked out is created at the head. The tree's agent is told by mail, and
 // its state returns to reviewing on the next round while any added PR is open.
-func AddReview(c *Config, name string, prs []ReviewRef, from string) ([]AddResult, error) {
+func AddReview(c *Config, name string, prs []ReviewRef, from string, vet bool) ([]AddResult, error) {
 	inst, err := Get(c, name)
 	if err != nil {
 		return nil, err
@@ -462,9 +463,16 @@ func AddReview(c *Config, name string, prs []ReviewRef, from string) ([]AddResul
 	if !meta.Reviewing() {
 		return nil, fmt.Errorf("%s is not a review tree — create one with: supatree review <pr>…", name)
 	}
+	// The tree's spec is the tree agent's to write: when the agent asked, the
+	// very spec mapped against is the one vetted, so it cannot change between.
 	spec, err := LoadSpec(inst.Root)
 	if err != nil {
 		return nil, err
+	}
+	if vet {
+		if err := c.vetSpec(inst.Stack, spec); err != nil {
+			return nil, err
+		}
 	}
 	if meta.Review == nil {
 		meta.Review = map[string]ReviewRef{}
@@ -492,8 +500,8 @@ func AddReview(c *Config, name string, prs []ReviewRef, from string) ([]AddResul
 		}
 		path := MemberPath(inst.Root, alias)
 		var sha string
-		if _, statErr := os.Stat(path); statErr == nil {
-			sha, err = moveBystanderToPR(path, pr)
+		if _, statErr := os.Lstat(path); statErr == nil {
+			sha, err = moveBystanderToPR(c, inst.Root, meta, alias, spec.Members[alias], pr)
 		} else {
 			sha, err = createReviewMember(c, inst.Root, meta, alias, spec.Members[alias], pr)
 		}
@@ -524,22 +532,54 @@ func AddReview(c *Config, name string, prs []ReviewRef, from string) ([]AddResul
 	return out, nil
 }
 
-// moveBystanderToPR moves a member that tracks no PR onto the PR head. It
-// sits on its tree-local review branch, so only its commit changes — but never
+// moveBystanderToPR moves a member that tracks no PR onto the PR head — never
 // over work: uncommitted changes, or commits of its own on top of the default
 // branch, are the reviewer's, and are reported instead.
-func moveBystanderToPR(path string, pr ReviewRef) (string, error) {
+//
+// It runs in the watcher, on a worktree an agent can write, so it trusts the
+// worktree for nothing. The member must be a real directory (not a link to
+// somewhere else) that is a worktree of the cached clone for its URL; the PR
+// is fetched in that clone; and rather than resetting the worktree in place —
+// a checkout with whatever filters the repository names — the member is
+// removed and re-created at the PR head by addWorktree, with them pinned off.
+func moveBystanderToPR(c *Config, root string, meta *Meta, alias, url string, pr ReviewRef) (string, error) {
+	path := MemberPath(root, alias)
+	if fi, err := os.Lstat(path); err != nil || !fi.IsDir() {
+		return "", fmt.Errorf("repos/%s is not a directory supatree made — leaving it alone", alias)
+	}
+	repo, err := c.ResolveMember(alias, url)
+	if err != nil {
+		return "", err
+	}
+	if common, err := GitCommonDir(path); err != nil || !samePath(common, filepath.Join(repo.Clone, ".git")) {
+		return "", fmt.Errorf("repos/%s is not a worktree of %s's cached clone — leaving it alone", alias, url)
+	}
 	if git.IsDirty(path) {
 		return "", errors.New("uncommitted changes here — commit or discard them, then add it again")
 	}
 	if n, err := git.CommitsAhead(path); err == nil && n > 0 {
 		return "", fmt.Errorf("%d commit(s) of its own on this member — it is not idle, so it is not moved", n)
 	}
-	sha, err := git.FetchRef(path, fmt.Sprintf("refs/pull/%d/head", pr.Number))
+	branch := meta.MemberBranch(alias)
+	sha, err := git.FetchRef(repo.Clone, fmt.Sprintf("refs/pull/%d/head", pr.Number))
 	if err != nil {
 		return "", err
 	}
-	return sha, resetTo(path, sha)
+	if err := git.RemoveWorktree(repo.Clone, path); err != nil {
+		return "", err
+	}
+	_ = git.DeleteBranch(repo.Clone, branch)
+	if err := addWorktree(repo.Clone, path, branch, sha); err != nil {
+		return "", fmt.Errorf("re-create repos/%s at the PR head: %w", alias, err)
+	}
+	return sha, nil
+}
+
+// samePath compares two paths after resolving links, for paths git reports.
+func samePath(a, b string) bool {
+	ra, errA := filepath.EvalSymlinks(a)
+	rb, errB := filepath.EvalSymlinks(b)
+	return errA == nil && errB == nil && ra == rb
 }
 
 // createReviewMember checks a member out at the PR head, as creating the
