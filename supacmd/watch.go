@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -63,6 +64,7 @@ var watchCmd = &cobra.Command{
 func runWatch(ctx context.Context) error {
 	if watchOnce {
 		runOps()
+		forwardPMMail()
 		return watchRound(ctx)
 	}
 
@@ -80,6 +82,7 @@ func runWatch(ctx context.Context) error {
 	// agent appear, and checking is one stat of a file, not a GitHub round.
 	launchTicker := time.NewTicker(launchPollInterval)
 	defer launchTicker.Stop()
+	self := newBinaryWatch()
 
 	if err := watchRound(ctx); err != nil {
 		logWatch("round failed: %v", err)
@@ -89,6 +92,7 @@ func runWatch(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-launchTicker.C:
+			forwardPMMail()
 			runLaunches(ctx)
 		case <-ticker.C:
 			// The daemon is spawned by `supatree start` and outlives its parent
@@ -98,6 +102,9 @@ func runWatch(ctx context.Context) error {
 			if !watchSessionsAlive() {
 				logWatch("no supatree sessions left — exiting")
 				return nil
+			}
+			if self.replaced() {
+				restartWatcher(self.path)
 			}
 			if err := watchRound(ctx); err != nil {
 				logWatch("round failed: %v", err)
@@ -149,11 +156,98 @@ func watchRound(ctx context.Context) error {
 
 	deliver(ctx, cfg, evs, cur.At)
 	runSchedule(cur.At)
+	runLaunches(ctx)
+	return nil
+}
+
+// forwardPMMail moves tree agents' messages for a PM into the request queue.
+// It runs on the fast launch tick, not in watchRound: a round is a GitHub fetch
+// that can take seconds and returns early on a ledger error, and a reply that
+// waits on either is a reply the PM reports as never sent.
+func forwardPMMail() {
+	cfg, err := supatree.Load()
+	if err != nil {
+		logWatch("forward PM mail: load config: %v", err)
+		return
+	}
+	insts, err := supatree.List(cfg)
+	if err != nil {
+		logWatch("forward PM mail: %v", err)
+		return
+	}
 	if _, err := supatree.ForwardPMMail(insts); err != nil {
 		logWatch("forward PM mail: %v", err)
 	}
-	runLaunches(ctx)
-	return nil
+}
+
+// binaryWatch notices the watcher's own executable being replaced on disk.
+//
+// The daemon outlives every upgrade: it exits only when no session is left, and
+// a newly spawned watcher loses the election to it quietly. Without this an
+// upgraded supatree keeps running the old watcher for days, launching agents
+// through the new binary (runLaunches re-execs it) while forwarding mail and
+// running ops with the old code.
+type binaryWatch struct {
+	path    string
+	stamp   binaryStamp
+	pending binaryStamp // a changed stamp seen once, not yet trusted
+}
+
+type binaryStamp struct {
+	mod  time.Time
+	size int64
+}
+
+func statBinary(path string) (binaryStamp, bool) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return binaryStamp{}, false
+	}
+	return binaryStamp{mod: fi.ModTime(), size: fi.Size()}, true
+}
+
+func newBinaryWatch() *binaryWatch {
+	path, err := os.Executable()
+	if err != nil {
+		return &binaryWatch{}
+	}
+	stamp, _ := statBinary(path)
+	return &binaryWatch{path: path, stamp: stamp}
+}
+
+// replaced reports a new binary at the watcher's path once it has been seen
+// unchanged on two consecutive checks — a binary still being written must not
+// be exec'd half-copied.
+func (w *binaryWatch) replaced() bool {
+	if w.path == "" {
+		return false
+	}
+	cur, ok := statBinary(w.path)
+	if !ok || cur == w.stamp {
+		w.pending = binaryStamp{}
+		return false
+	}
+	if cur != w.pending {
+		w.pending = cur
+		return false
+	}
+	return true
+}
+
+// opsMu is held while an op runs, so a restart never cuts a tree create or
+// removal in half.
+var opsMu sync.Mutex
+
+// restartWatcher replaces this process with the binary at path, keeping its
+// arguments. The singleton lock goes with the old image (Go opens every file
+// close-on-exec), so the new one wins the election straight away. On failure
+// the old watcher carries on.
+func restartWatcher(path string) {
+	logWatch("watcher binary %s changed on disk — restarting", path)
+	opsMu.Lock()
+	err := syscall.Exec(path, os.Args, os.Environ())
+	opsMu.Unlock()
+	logWatch("restart failed, carrying on: %v", err)
 }
 
 // launchPollInterval is how often the watcher checks the launch queue.
@@ -194,6 +288,8 @@ func runOpsLoop(ctx context.Context) {
 // runOps claims and answers every waiting request, one at a time: two creates
 // at once would race for the same generated name.
 func runOps() {
+	opsMu.Lock()
+	defer opsMu.Unlock()
 	cfg, err := supatree.Load()
 	if err != nil {
 		logWatch("ops: load config: %v", err)

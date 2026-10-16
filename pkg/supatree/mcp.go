@@ -243,7 +243,7 @@ func MCPServer(version string) *mcp.Server {
 			},
 			{
 				Name:        "remove_tree",
-				Description: "PM: remove a finished supatree and its member worktrees. Needs autonomy 'auto' to do unasked, or `asked` when the human has asked you to; refuses a tree that is not done unless forced.",
+				Description: "PM: remove a finished supatree and its member worktrees. Needs autonomy 'auto' to do unasked, or `asked` when the human has asked you to; refuses a tree that is not done (or, for a review tree, reviewed) unless forced.",
 				InputSchema: mcp.ObjectSchema(map[string]any{
 					"tree":       mcp.StringProp("Supatree name"),
 					"force":      mcp.BoolProp("Remove even though it is not finished"),
@@ -253,7 +253,7 @@ func MCPServer(version string) *mcp.Server {
 			},
 			{
 				Name:        "stack_add",
-				Description: "PM: add a member repo to a stack, committed to the stack repo. Trees get it on their next sync; the repository is cloned when a tree first needs it. Needs autonomy 'auto' to do unasked, or `asked`.",
+				Description: "PM: add a member repo to a stack, committed to the stack's local checkout (not pushed — new trees are built from its origin, so the stack must be pushed before they see it); the repository is cloned when a tree first needs it. Needs autonomy 'auto' to do unasked, or `asked`.",
 				InputSchema: mcp.ObjectSchema(map[string]any{
 					argStack:     mcp.StringProp("Stack alias"),
 					"repo":       mcp.StringProp("owner/repo (GitHub, over ssh) or a git URL"),
@@ -958,7 +958,7 @@ func handleMessageAgent(args map[string]any) (string, bool) {
 		if err := Deliver(inst.Root, to, from, text); err != nil {
 			return err.Error(), true
 		}
-		return "left for the PM; the watcher forwards it into the PM's request queue within a few seconds.", false
+		return fmt.Sprintf("left for %s in this tree's mailbox; the watcher moves it into that PM's `requests` on its next pass, every few seconds while the watcher runs.", to), false
 	}
 	if target == nil {
 		return fmt.Sprintf("no agent named %q in supatree %q — call `agents` to see them, or `start_agent` to launch one", to, inst.Name), true
@@ -1353,14 +1353,26 @@ func handleRemoveTree(args map[string]any) (string, bool) {
 		cache := github.NewCache(PRCachePath())
 		_ = cache.Load()
 		sum := Status([]*Instance{inst}, cache, StatusOptions{})
-		if len(sum.Trees) > 0 && sum.Trees[0].State != TreeDone {
-			return fmt.Sprintf("%s is %s, not done — removing it would throw away unmerged work. Pass force only if the human asked.",
-				inst.Name, sum.Trees[0].State), true
+		if len(sum.Trees) > 0 {
+			if msg := removeRefusal(sum.Trees[0]); msg != "" {
+				return msg, true
+			}
 		}
 	}
 	// The watcher removes it: the worktrees and branches being deleted are
 	// outside the PM's sandbox, and only the watcher can close the tree's tabs.
 	return opReply(RequestOp(PMDir(), Op{Kind: OpRemove, Tree: inst.Name, Force: force}, opTimeout))
+}
+
+// removeRefusal is why remove_tree refuses t without force, or "" when t is
+// reapable. A review tree finishes as reviewed, not done, and holds no work of
+// our own (authoring is refused there), so it is as removable as a done tree.
+func removeRefusal(t TreeStatus) string {
+	if t.Reap() {
+		return ""
+	}
+	return fmt.Sprintf("%s is %s, not done or reviewed — removing it would throw away unfinished work. Pass force only if the human asked.",
+		t.Name, t.State)
 }
 
 func handleHistory(args map[string]any) (string, bool) {
@@ -1703,7 +1715,7 @@ func handleStackAdd(args map[string]any) (string, bool) {
 	}); isErr {
 		return out, true
 	}
-	return fmt.Sprintf("added %s (%s) to %s. Trees get it on their next sync.", alias, url, stack), false
+	return fmt.Sprintf("added %s (%s) to %s. %s", alias, url, stack, stackNote(stack)), false
 }
 
 func handleStackRm(args map[string]any) (string, bool) {
@@ -1714,7 +1726,7 @@ func handleStackRm(args map[string]any) (string, bool) {
 	}); isErr {
 		return out, true
 	}
-	return fmt.Sprintf("removed %s from %s. Trees that have it keep it until synced with prune.", alias, stack), false
+	return fmt.Sprintf("removed %s from %s. %s", alias, stack, stackNote(stack)), false
 }
 
 func handleStackDep(args map[string]any) (string, bool) {
@@ -1726,5 +1738,13 @@ func handleStackDep(args map[string]any) (string, bool) {
 	}); isErr {
 		return out, true
 	}
-	return fmt.Sprintf("%s now depends on %s in %s.", from, to, stack), false
+	return fmt.Sprintf("%s now depends on %s in %s. %s", from, to, stack, stackNote(stack)), false
+}
+
+func stackNote(stack string) string {
+	cfg, err := Load()
+	if err != nil {
+		return ""
+	}
+	return cfg.StackEditNote(stack)
 }

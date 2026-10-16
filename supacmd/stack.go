@@ -34,7 +34,8 @@ var stackAddCmd = &cobra.Command{
 	Long: "add records a member in the stack's supatree.yml, as a commit, and clones it\n" +
 		"into the repo cache now so the first tree does not wait for it. The alias —\n" +
 		"repos/<alias>/ in every tree — defaults to the repository's name; --as picks\n" +
-		"another. Existing trees get it on their next sync.",
+		"another. The commit is local: push the stack before creating a tree that needs\n" +
+		"the member, since trees are built from its origin.",
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		arg := args[1]
@@ -48,7 +49,7 @@ var stackAddCmd = &cobra.Command{
 		if err := stCfg.StackAdd(args[0], alias, url, true); err != nil {
 			return err
 		}
-		fmt.Printf("added %s (%s) to %s — trees get it on: supatree sync <tree>\n", alias, url, args[0])
+		fmt.Printf("added %s (%s) to %s\n%s\n", alias, url, args[0], stCfg.StackEditNote(args[0]))
 		return nil
 	},
 }

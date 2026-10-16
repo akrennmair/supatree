@@ -334,3 +334,23 @@ func TestRollupReviewedIsReapableButNotDone(t *testing.T) {
 		t.Error("a finished tree is not stale, it is finished")
 	}
 }
+
+// remove_tree's guard is Reap: a review tree that finished as reviewed is
+// removable without force (#13), one still under review is not.
+func TestRemoveRefusal(t *testing.T) {
+	for _, tc := range []struct {
+		state  TreeState
+		refuse bool
+	}{
+		{TreeDone, false},
+		{TreeReviewed, false},
+		{TreeReview, true},
+		{TreeApproved, true},
+		{TreeWIP, true},
+	} {
+		got := removeRefusal(TreeStatus{Name: "berlin", State: tc.state})
+		if (got != "") != tc.refuse {
+			t.Errorf("removeRefusal(%s) = %q, want refusal %v", tc.state, got, tc.refuse)
+		}
+	}
+}

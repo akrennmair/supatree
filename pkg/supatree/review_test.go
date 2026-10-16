@@ -308,3 +308,73 @@ func TestReviewTreeReachesReviewedWithBystanders(t *testing.T) {
 		t.Error("a finished review tree should be reapable")
 	}
 }
+
+// reviewStackFixture is a stack with an origin — trees are built from origin's
+// default branch, which is what lets the local checkout run ahead of it — and
+// member repos that resolve to o/<alias> on GitHub, each with a PR #1 head.
+func reviewStackFixture(t *testing.T) (c *Config, a, b string) {
+	t.Helper()
+	c, a, b = stackFixture(t)
+	repos := map[string]string{a: "o/a", b: "o/b"}
+	orig := resolveRemote
+	t.Cleanup(func() { resolveRemote = orig })
+	resolveRemote = func(raw string) (github.RemoteRef, bool) {
+		if repo, ok := repos[raw]; ok {
+			return github.ParseRemote("git@github.com:" + repo + ".git")
+		}
+		return orig(raw)
+	}
+	for _, r := range []string{a, b} {
+		run(t, r, "update-ref", "refs/pull/1/head", "HEAD")
+	}
+	stack := c.FindStack("s").Path
+	origin := filepath.Join(t.TempDir(), "stack.git")
+	run(t, stack, "clone", "-q", "--bare", stack, origin)
+	run(t, stack, "remote", "add", "origin", origin)
+	run(t, stack, "fetch", "-q", "origin")
+	return c, a, b
+}
+
+func TestNewReviewChecksOutThePR(t *testing.T) {
+	c, _, _ := reviewStackFixture(t)
+	inst, _, err := NewReview(c, ReviewOptions{Stack: "s", Name: "rev",
+		PRs: []ReviewRef{{Repo: "o/a", Number: 1, URL: "https://github.com/o/a/pull/1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := inst.FindMember("a"); m == nil || !m.Exists || m.Review == nil || m.Review.Number != 1 {
+		t.Fatalf("member a = %+v, want it checked out at o/a#1", m)
+	}
+}
+
+// #17: `stack add` commits locally; a review tree for that repo is built from
+// origin, which lacks it. That must be refused, saying why, not create a tree
+// with nothing to review.
+func TestNewReviewRefusesAMemberThatWasNeverPushed(t *testing.T) {
+	c, _, b := reviewStackFixture(t)
+	if err := c.StackAdd("s", "b", b, false); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := NewReview(c, ReviewOptions{Stack: "s", Name: "rev",
+		PRs: []ReviewRef{{Repo: "o/b", Number: 1, URL: "https://github.com/o/b/pull/1"}}})
+	if err == nil {
+		t.Fatal("a review of a repo missing from origin's spec was accepted")
+	}
+	if !strings.Contains(err.Error(), "local checkout") || !strings.Contains(err.Error(), "push the stack") {
+		t.Errorf("err = %v, want it to name the unpushed stack edit", err)
+	}
+	if insts, _ := List(c); len(insts) != 0 {
+		t.Errorf("a refused review left %d tree(s) behind", len(insts))
+	}
+
+	// Once pushed, the same review works.
+	run(t, c.FindStack("s").Path, "push", "-q", "origin", "HEAD:main")
+	inst, _, err := NewReview(c, ReviewOptions{Stack: "s", Name: "rev",
+		PRs: []ReviewRef{{Repo: "o/b", Number: 1, URL: "https://github.com/o/b/pull/1"}}})
+	if err != nil {
+		t.Fatalf("after pushing: %v", err)
+	}
+	if m := inst.FindMember("b"); m == nil || m.Review == nil {
+		t.Errorf("member b = %+v, want it under review", m)
+	}
+}

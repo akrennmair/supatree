@@ -144,40 +144,32 @@ func NewReview(c *Config, opts ReviewOptions) (*Instance, *SyncReport, error) {
 	if len(opts.PRs) == 0 {
 		return nil, nil, errors.New("no pull requests given")
 	}
-	stack, err := resolveStack(c, opts.Stack)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	byAlias, err := mapPRsToMembers(stack.Path, opts.PRs)
-	if err != nil {
-		return nil, nil, err
-	}
-
 	inst, report, err := New(c, CreateOptions{
-		Stack:  opts.Stack,
-		Name:   opts.Name,
-		Model:  opts.Model,
-		Now:    opts.Now,
-		Review: byAlias,
-		Intent: opts.Intent,
+		Stack:     opts.Stack,
+		Name:      opts.Name,
+		Model:     opts.Model,
+		Now:       opts.Now,
+		ReviewPRs: opts.PRs,
+		Intent:    opts.Intent,
 	})
 	if err != nil {
 		return nil, report, err
 	}
 	// Seed the PR cache from what we already know, so the tree shows its PRs
 	// by number before the first round has run.
+	byAlias := make(map[string]ReviewRef, len(opts.PRs))
+	for _, m := range inst.Members {
+		if m.Review != nil {
+			byAlias[m.Alias] = *m.Review
+		}
+	}
 	seedPRCache(byAlias)
 	return inst, report, nil
 }
 
 // mapPRsToMembers keys the review set by member alias, matching each pull
-// request's repository against the stack's members.
-func mapPRsToMembers(stackPath string, prs []ReviewRef) (map[string]ReviewRef, error) {
-	spec, err := LoadSpec(stackPath)
-	if err != nil {
-		return nil, err
-	}
+// request's repository against the spec's members.
+func mapPRsToMembers(spec *Spec, prs []ReviewRef) (map[string]ReviewRef, error) {
 	byAlias := make(map[string]ReviewRef, len(prs))
 	for _, pr := range prs {
 		alias, err := aliasForRepo(pr.Repo, spec.Members)
@@ -191,6 +183,41 @@ func mapPRsToMembers(stackPath string, prs []ReviewRef) (map[string]ReviewRef, e
 		byAlias[alias] = pr
 	}
 	return byAlias, nil
+}
+
+// unpublishedMember explains a mapping failure. The tree is built from the
+// stack's origin, but `stack add` commits to the local checkout first — so a
+// repo the local spec has and the tree's does not is a member that was added
+// and never pushed, and saying only "no member" sends the caller to add it
+// again.
+func unpublishedMember(stack *Stack, tree *Spec, err error, prs []ReviewRef) error {
+	local, lerr := LoadSpec(stack.Path)
+	if lerr != nil {
+		return err
+	}
+	for _, pr := range prs {
+		if _, inTree := aliasForRepo(pr.Repo, tree.Members); inTree == nil {
+			continue
+		}
+		if _, inLocal := aliasForRepo(pr.Repo, local.Members); inLocal == nil {
+			return fmt.Errorf("%w\nstack %s's local checkout (%s) has %s, but trees are built from its origin's default branch, which does not — push the stack (or merge its pending PR) and try again",
+				err, stack.Alias, stack.Path, pr.Repo)
+		}
+	}
+	return err
+}
+
+// requireReviewMembers checks every pull request ended up checked out. A
+// review tree missing one is worse than no tree: it reports nothing to review,
+// and its agent reviews an empty set.
+func requireReviewMembers(inst *Instance, review map[string]ReviewRef) error {
+	for alias, ref := range review {
+		m := inst.FindMember(alias)
+		if m == nil || !m.Exists || m.Review == nil {
+			return fmt.Errorf("%s was not checked out as member %q — the review tree would not contain it", ref.URL, alias)
+		}
+	}
+	return nil
 }
 
 // aliasForRepo finds the stack member whose URL is repo. The spec carries the

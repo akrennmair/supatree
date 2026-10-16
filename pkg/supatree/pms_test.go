@@ -74,8 +74,15 @@ func TestAddAndRemovePMs(t *testing.T) {
 		t.Error("a PM name that is not a path segment was accepted")
 	}
 
+	// Reading a PM's inbox leaves a lock beside it; removing the PM takes both.
+	if _, err := Mail(PMDir(), PMAgentName); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := RemovePM(DefaultPMName); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := os.Stat(mailLockPath(PMDir(), PMAgentName)); !os.IsNotExist(err) {
+		t.Errorf("removed PM's mail lock still exists (stat err = %v)", err)
 	}
 	if top, _ := ResolvePM(""); top.Name != "research" {
 		t.Errorf("top after removing the default = %q, want research promoted", top.Name)
