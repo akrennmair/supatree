@@ -242,6 +242,17 @@ func MCPServer(version string) *mcp.Server {
 				Handler: handleStartAgent,
 			},
 			{
+				Name:        "stop_agent",
+				Description: "PM: stop running agent processes — one agent of a tree, all of a tree's, or every orphan (an agent process whose tab is gone, which nobody can see or close). You cannot see processes yourself; `orphans` is how leftovers from a crash or a removed tree are cleaned up. Needs autonomy 'auto' to do unasked, or `asked`.",
+				InputSchema: mcp.ObjectSchema(map[string]any{
+					"tree":       mcp.StringProp("Supatree whose agents to stop"),
+					"agent":      mcp.StringProp("Only this agent of the tree (default: all of them)"),
+					"orphans":    mcp.BoolProp("Stop every agent process that has no tab"),
+					argAskedName: mcp.BoolProp("The human asked for this in this turn"),
+				}, nil),
+				Handler: handleStopAgent,
+			},
+			{
 				Name:        "remove_tree",
 				Description: "PM: remove a finished supatree and its member worktrees. Needs autonomy 'auto' to do unasked, or `asked` when the human has asked you to; refuses a tree that is not done (or, for a review tree, reviewed) unless forced.",
 				InputSchema: mcp.ObjectSchema(map[string]any{
@@ -1032,6 +1043,7 @@ var pmTools = map[string]bool{
 	"new_tree":    true,
 	"start_agent": true,
 	"remove_tree": true,
+	"stop_agent":  true,
 	"history":     true,
 	"stack_add":   true,
 	"stack_rm":    true,
@@ -1412,6 +1424,34 @@ func handleRemoveTree(args map[string]any) (string, bool) {
 	// The watcher removes it: the worktrees and branches being deleted are
 	// outside the PM's sandbox, and only the watcher can close the tree's tabs.
 	return opReply(RequestOp(PMDir(), Op{Kind: OpRemove, Tree: inst.Name, Force: force}, opTimeout))
+}
+
+func handleStopAgent(args map[string]any) (string, bool) {
+	tree, _ := args[argTree].(string)
+	agent, _ := args["agent"].(string)
+	orphans, _ := args["orphans"].(bool)
+	if tree == "" && !orphans {
+		return "name a tree, or pass orphans", true
+	}
+	cfg, err := Load()
+	if err != nil {
+		return err.Error(), true
+	}
+	var meta *Meta
+	if tree != "" {
+		inst, err := Get(cfg, tree)
+		if err != nil {
+			return err.Error(), true
+		}
+		if meta, err = LoadMeta(inst.Root); err != nil {
+			return err.Error(), true
+		}
+	}
+	if p := cfg.Resolve(meta).AsAsked(argAsked(args)); !p.AllowsMutation() {
+		return p.Deny("stopping agents"), true
+	}
+	// The watcher does it: no sandbox may signal another process.
+	return opReply(RequestOp(PMDir(), Op{Kind: OpStop, Tree: tree, Agent: agent, Orphans: orphans}, opTimeout))
 }
 
 // removeRefusal is why remove_tree refuses t without force, or "" when t is

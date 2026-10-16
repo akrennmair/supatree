@@ -185,16 +185,16 @@ func TestForwardPMMailAddressesThePM(t *testing.T) {
 // opens the PM.
 func TestColdStartMarkerIsTakenOnce(t *testing.T) {
 	testutil.IsolateHome(t)
-	if TakeColdStart("st-main") {
+	if TakeColdStart(sessionMain) {
 		t.Fatal("took a marker nobody set")
 	}
-	if err := MarkColdStart("st-main"); err != nil {
+	if err := MarkColdStart(sessionMain); err != nil {
 		t.Fatal(err)
 	}
-	if !TakeColdStart("st-main") {
+	if !TakeColdStart(sessionMain) {
 		t.Fatal("marker not taken")
 	}
-	if TakeColdStart("st-main") {
+	if TakeColdStart(sessionMain) {
 		t.Error("marker taken twice — every sidebar would open the PM")
 	}
 	if TakeColdStart("") {

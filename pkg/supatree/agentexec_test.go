@@ -3,9 +3,11 @@ package supatree
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -124,7 +126,7 @@ func TestFailedOpenLeavesNoRecord(t *testing.T) {
 	fakeNono(t, []string{brokenProfile}, nil)
 	cfg := &Config{Models: map[string]config.Model{defaultModelKey: {NonoProfile: brokenProfile, Binary: defaultModelKey}}}
 	ws := zellij.Workspace{LayoutsDir: LayoutsDir()}
-	inst := &Instance{Name: "lima", Root: t.TempDir(), Model: defaultModelKey}
+	inst := &Instance{Name: treeLima, Root: t.TempDir(), Model: defaultModelKey}
 
 	for _, name := range []string{"scout", MainAgent} {
 		if _, err := OpenRootAgent(inst, cfg, ws, "20%", name, OpenOptions{}, nil); err == nil {
@@ -229,8 +231,8 @@ func TestAgentExec(t *testing.T) {
 func TestAgentExecShim(t *testing.T) {
 	testutil.IsolateHome(t)
 	fakeNono(t, nil, nil)
-	env := withAgentExec(map[string]string{"SUPATREE": "lima"})
-	if env["SUPATREE"] != "lima" || !strings.HasPrefix(env["PATH"], ShimDir()+string(os.PathListSeparator)) {
+	env := withAgentExec(map[string]string{"SUPATREE": treeLima})
+	if env["SUPATREE"] != treeLima || !strings.HasPrefix(env["PATH"], ShimDir()+string(os.PathListSeparator)) {
 		t.Fatalf("env = %v, want the shim first on PATH", env)
 	}
 	data, err := os.ReadFile(filepath.Join(ShimDir(), "nono"))
@@ -240,5 +242,125 @@ func TestAgentExecShim(t *testing.T) {
 	got := withoutPathEntry([]string{"A=1", "PATH=" + ShimDir() + ":/usr/bin"}, ShimDir())
 	if got[1] != "PATH=/usr/bin" {
 		t.Errorf("PATH below the shim = %q, want the shim dropped", got[1])
+	}
+}
+
+// waitFor polls cond for up to two seconds.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	for i := 0; i < 200; i++ {
+		if cond() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+// agent-exec records the agent it runs for as long as it runs, and escalates a
+// hangup nono ignores rather than leaving the agent running paneless (#1, #2).
+func TestAgentExecRecordsAndEscalates(t *testing.T) {
+	testutil.IsolateHome(t)
+	t.Setenv("SUPATREE_NAME", treeLima)
+	t.Setenv("SUPATREE_AGENT", "main")
+	t.Setenv("ZELLIJ_SESSION_NAME", sessionMain)
+	origAlive, origEsc := procIsAgentExec, escalateAfter
+	procIsAgentExec = func(int) bool { return true }
+	escalateAfter = 50 * time.Millisecond
+	t.Cleanup(func() { procIsAgentExec, escalateAfter = origAlive, origEsc })
+
+	done := make(chan int, 1)
+	go func() {
+		var out bytes.Buffer
+		done <- AgentExec(AgentExecOptions{
+			Nono: "/bin/sh", Args: []string{"-c", "trap '' HUP TERM; exec sleep 30", "--resume", "sess-1"},
+			Quick: time.Nanosecond, Stdin: strings.NewReader(""), Stdout: &out, Stderr: &out,
+		})
+	}()
+	var rec ProcRecord
+	waitFor(t, "the process record", func() bool {
+		procs := ListProcs()
+		if len(procs) == 1 {
+			rec = procs[0]
+		}
+		return len(procs) == 1
+	})
+	if rec.PID != os.Getpid() || rec.NonoPID == 0 || rec.Tab() != treeLima || rec.Session != sessionMain || rec.SessionID != "sess-1" {
+		t.Fatalf("record = %+v", rec)
+	}
+
+	if err := syscall.Kill(os.Getpid(), syscall.SIGHUP); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case code := <-done:
+		if code == 0 {
+			t.Errorf("exit code 0 from an agent that had to be killed")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a nono ignoring hangup and TERM was never killed")
+	}
+	if _, err := os.Stat(procPath(rec.PID)); !os.IsNotExist(err) {
+		t.Errorf("record outlived its process (stat err = %v)", err)
+	}
+}
+
+func TestOrphans(t *testing.T) {
+	procs := []ProcRecord{
+		{PID: 1, Tree: treeLima, Agent: MainAgent, Session: sessionMain},
+		{PID: 2, Tree: "gone", Agent: MainAgent, Session: sessionMain},
+		{PID: 3, PM: DefaultPMName, Session: sessionMain},
+		{PID: 4, PM: "reviews", Session: sessionMain},
+		{PID: 5, Tree: "x", Agent: MainAgent, Session: "st-unreadable"},
+	}
+	tabs := map[string]map[string]bool{sessionMain: {treeLima: true, PMTab: true}}
+	got := Orphans(procs, tabs)
+	if len(got) != 2 || got[0].PID != 2 || got[1].PID != 4 {
+		t.Errorf("orphans = %+v; want the removed tree's agent and the tabless PM", got)
+	}
+}
+
+func TestDescendants(t *testing.T) {
+	children := parseProcTable("  1     0\n 10     1\n 11    10\n 12    11\n 13    10\n 20     1\nbad line\n")
+	got := descendants(10, children)
+	if len(got) != 3 || got[0] != 11 || got[1] != 13 || got[2] != 12 {
+		t.Errorf("descendants(10) = %v, want [11 13 12]: every level, parents first", got)
+	}
+}
+
+func TestStopTargetSelect(t *testing.T) {
+	procs := []ProcRecord{
+		{PID: 1, Tree: treeLima, Agent: MainAgent, Session: sessionMain},
+		{PID: 2, Tree: treeLima, Agent: agentReviewer, Session: sessionMain},
+		{PID: 3, Tree: treeLima, Member: "api", Agent: "api", Session: sessionMain},
+		{PID: 4, Tree: "quito", Agent: MainAgent, Session: sessionMain},
+		{PID: 5, PM: DefaultPMName, Session: sessionMain},
+	}
+	tabs := map[string]map[string]bool{sessionMain: {treeLima: true, "lima:reviewer": true, "lima:api": true, PMTab: true}}
+	pids := func(rs []ProcRecord) []int {
+		out := make([]int, 0, len(rs))
+		for _, r := range rs {
+			out = append(out, r.PID)
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		name string
+		t    StopTarget
+		want []int
+	}{
+		{"a whole tree", StopTarget{Tree: treeLima}, []int{1, 2, 3}},
+		{"one agent", StopTarget{Tree: treeLima, Agent: agentReviewer}, []int{2}},
+		{"a member agent", StopTarget{Tree: treeLima, Agent: "api"}, []int{3}},
+		{"orphans", StopTarget{Orphans: true}, []int{4}},
+		{"a pid", StopTarget{PID: 5}, []int{5}},
+		{"an unknown pid", StopTarget{PID: 99}, []int{}},
+	} {
+		if got := pids(tc.t.Select(procs, tabs)); fmt.Sprint(got) != fmt.Sprint(tc.want) {
+			t.Errorf("%s: selected %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	if _, err := StopAgents(StopTarget{}); err == nil {
+		t.Error("an empty target must not mean everything")
 	}
 }

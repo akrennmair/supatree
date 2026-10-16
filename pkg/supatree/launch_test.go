@@ -15,10 +15,10 @@ func TestLaunchQueueRoundTrip(t *testing.T) {
 	if reqs, err := DrainLaunches(); err != nil || len(reqs) != 0 {
 		t.Fatalf("DrainLaunches on no queue = %v, %v; want none, nil", reqs, err)
 	}
-	if _, err := QueueLaunch(LaunchRequest{Tree: treeA, Session: "st-main"}); err != nil {
+	if _, err := QueueLaunch(LaunchRequest{Tree: treeA, Session: sessionMain}); err != nil {
 		t.Fatalf("QueueLaunch: %v", err)
 	}
-	if _, err := QueueLaunch(LaunchRequest{Tree: "hobart", Agent: "reviewer"}); err != nil {
+	if _, err := QueueLaunch(LaunchRequest{Tree: "hobart", Agent: agentReviewer}); err != nil {
 		t.Fatalf("QueueLaunch: %v", err)
 	}
 	// A torn line costs that request only.
@@ -36,10 +36,10 @@ func TestLaunchQueueRoundTrip(t *testing.T) {
 	if len(reqs) != 2 {
 		t.Fatalf("got %d requests, want 2: %+v", len(reqs), reqs)
 	}
-	if reqs[0].Tree != treeA || reqs[0].Agent != "main" || reqs[0].Session != "st-main" {
+	if reqs[0].Tree != treeA || reqs[0].Agent != "main" || reqs[0].Session != sessionMain {
 		t.Errorf("first = %+v; want canberra/main in st-main (agent defaults to main)", reqs[0])
 	}
-	if reqs[1].Agent != "reviewer" {
+	if reqs[1].Agent != agentReviewer {
 		t.Errorf("second agent = %q, want reviewer", reqs[1].Agent)
 	}
 	// Each launch happens once: a second drain is empty, or every watcher tick
@@ -95,6 +95,11 @@ func TestForwardPMMail(t *testing.T) {
 	}
 }
 
+const (
+	sessionMain   = "st-main"
+	agentReviewer = "reviewer"
+)
+
 // noLaunchWait stops startAgent waiting on a watcher no test runs.
 func noLaunchWait(t *testing.T) {
 	t.Helper()
@@ -106,7 +111,7 @@ func noLaunchWait(t *testing.T) {
 func TestStartAgentBriefsThenQueues(t *testing.T) {
 	testutil.IsolateHome(t)
 	noLaunchWait(t)
-	t.Setenv("ZELLIJ_SESSION_NAME", "st-main")
+	t.Setenv("ZELLIJ_SESSION_NAME", sessionMain)
 	root := t.TempDir()
 	inst := &Instance{Name: treeA, Root: root, Model: defaultModelKey}
 
@@ -127,7 +132,7 @@ func TestStartAgentBriefsThenQueues(t *testing.T) {
 		t.Fatalf("mailbox = %+v; want the brief, from the PM", msgs)
 	}
 	reqs, _ := DrainLaunches()
-	if len(reqs) != 1 || reqs[0].Tree != treeA || reqs[0].Agent != "main" || reqs[0].Session != "st-main" {
+	if len(reqs) != 1 || reqs[0].Tree != treeA || reqs[0].Agent != "main" || reqs[0].Session != sessionMain {
 		t.Fatalf("launches = %+v; want canberra/main in the PM's session", reqs)
 	}
 }
