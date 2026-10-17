@@ -558,7 +558,11 @@ func moveBystanderToPR(c *Config, root string, meta *Meta, alias, url string, pr
 	if n, err := git.CommitsAhead(path); err == nil && n > 0 {
 		return "", fmt.Errorf("%d commit(s) of its own on this member — it is not idle, so it is not moved", n)
 	}
-	sha, err := git.FetchRef(repo.Clone, fmt.Sprintf("refs/pull/%d/head", pr.Number))
+	jail, err := c.gitJail()
+	if err != nil {
+		return "", err
+	}
+	sha, err := fetchRef(jail.reading(repo.URL), repo.Clone, fmt.Sprintf("refs/pull/%d/head", pr.Number))
 	if err != nil {
 		return "", err
 	}
@@ -571,7 +575,7 @@ func moveBystanderToPR(c *Config, root string, meta *Meta, alias, url string, pr
 		return "", err
 	}
 	_ = git.DeleteBranch(repo.Clone, branch)
-	if err := addWorktree(repo.Clone, path, branch, sha); err != nil {
+	if err := addWorktree(jail, repo.Clone, path, branch, sha); err != nil {
 		return "", fmt.Errorf("re-create repos/%s at the PR head: %w", alias, err)
 	}
 	return sha, nil
@@ -628,7 +632,7 @@ func createReviewMember(c *Config, root string, meta *Meta, alias, url string, p
 		return "", err
 	}
 	meta.Review[alias] = pr
-	if err := createMember(repo, MemberPath(root, alias), meta, alias, &SyncReport{}); err != nil {
+	if err := createMember(c, repo, MemberPath(root, alias), meta, alias, &SyncReport{}); err != nil {
 		delete(meta.Review, alias)
 		return "", err
 	}

@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -38,8 +37,8 @@ func init() {
 }
 
 // addWorktree is `git worktree add -b branch path start` in repo, with every
-// filter the checkout could run pinned off.
-func addWorktree(repo, path, branch, start string) error {
+// filter the checkout could run pinned off, run in jail.
+func addWorktree(jail gitJail, repo, path, branch, start string) error {
 	// One commit, resolved once: a ref is agent-movable, and the filters
 	// pinned must be those of the very commit checked out.
 	sha, err := gitOutput(repo, "rev-parse", "--verify", "--quiet", start+"^{commit}")
@@ -61,15 +60,58 @@ func addWorktree(repo, path, branch, start string) error {
 	// The user's and the system's attribute files name filters too; neither
 	// has any business in a checkout supatree makes.
 	pins = append(pins, "-c", "core.attributesFile=/dev/null")
-	args := append(pins, "-C", repo, "worktree", "add", "-b", branch, path, start)
-	cmd := exec.CommandContext(context.Background(), "git", args...)
+	// The jail grants only what exists: the worktree's directory is made
+	// here, empty, which git worktree add accepts, and removed again if the
+	// checkout fails before filling it.
+	if err := os.MkdirAll(path, 0755); err != nil {
+		return fmt.Errorf("create %s: %w", path, err)
+	}
+	cmd, err := jail.command(context.Background(), repo, []string{path},
+		append(pins, "worktree", "add", "-b", branch, path, start)...)
+	if err != nil {
+		_ = os.Remove(path)
+		return err
+	}
 	cmd.Env = append(os.Environ(), "GIT_ATTR_NOSYSTEM=1")
 	var errBuf bytes.Buffer
 	cmd.Stderr = &errBuf
 	if err := cmd.Run(); err != nil {
+		_ = os.Remove(path) // only if still empty
 		return fmt.Errorf("git worktree add: %s", strings.TrimSpace(errBuf.String()))
 	}
 	return nil
+}
+
+// fetchGit runs a fetch in repo, in jail: a fetch is where a repository's
+// config picks the ssh command, credential helpers and URL rewrites. Bounded
+// and never prompting, like netGit; it returns the trimmed combined output.
+func fetchGit(jail gitJail, repo string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), stackNetTimeout)
+	defer cancel()
+	cmd, err := jail.command(ctx, repo, nil, append([]string{"fetch"}, args...)...)
+	if err != nil {
+		return "", err
+	}
+	cmd.Stdin = nil
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
+// fetchRef fetches ref from repo's origin, in jail, and returns the commit it
+// resolved to. It is git.FetchRef, confined.
+func fetchRef(jail gitJail, repo, ref string) (string, error) {
+	if out, err := fetchGit(jail, repo, "origin", ref); err != nil {
+		return "", fmt.Errorf("git fetch %s: %s", ref, out)
+	}
+	sha, err := gitOutput(repo, "rev-parse", "FETCH_HEAD")
+	if err != nil {
+		return "", err
+	}
+	if !commitSHA.MatchString(sha) {
+		return "", fmt.Errorf("git fetch %s: FETCH_HEAD is %q, not a commit", ref, sha)
+	}
+	return sha, nil
 }
 
 // createWorktree branches path off repo's default branch, fetching it first:
@@ -83,7 +125,7 @@ func addWorktree(repo, path, branch, start string) error {
 // and a failed fetch is an error. The repository's own refs are agent-
 // writable, and a fallback to origin/<default> would let an agent choose the
 // commit — AGENTS.md included — every new tree starts from.
-func createWorktree(repo, path, branch, url string) (offline bool, err error) {
+func createWorktree(jail gitJail, repo, path, branch, url string) (offline bool, err error) {
 	if err := git.RequireSafeRepo(repo); err != nil {
 		return false, err
 	}
@@ -92,21 +134,23 @@ func createWorktree(repo, path, branch, url string) (offline bool, err error) {
 		if err != nil {
 			return false, err
 		}
-		if out, err := netGit(repo, "fetch", "-q", "--", url, "refs/heads/"+def); err != nil {
+		if out, err := fetchGit(jail, repo, "-q", "--", url, "refs/heads/"+def); err != nil {
 			return false, fmt.Errorf("fetch %s from the stack's pinned origin %s: %s", def, url, out)
 		}
 		if !gitRefExists(repo, sha) {
 			return false, fmt.Errorf("the stack's origin advertised %s for %s, but the fetch did not bring it", sha, def)
 		}
 		_ = runGit(repo, "update-ref", "refs/remotes/origin/"+def, sha) // for status, not trusted
-		return false, addWorktree(repo, path, branch, sha)
+		return false, addWorktree(jail, repo, path, branch, sha)
 	}
 	def := git.DefaultBranch(repo)
 	base := "origin/" + def
 	var fetchErr error
 	switch {
 	case hasGitRemote(repo, "origin"):
-		fetchErr = git.FetchOrigin(repo, def)
+		if out, err := fetchGit(jail, repo, "origin", def); err != nil {
+			fetchErr = fmt.Errorf("git fetch: %s", out)
+		}
 	default:
 		base = def
 	}
@@ -117,7 +161,7 @@ func createWorktree(repo, path, branch, url string) (offline bool, err error) {
 		return false, fmt.Errorf("no %s to branch from in %s", base, repo)
 	}
 	offline = fetchErr != nil || base == def
-	return offline, addWorktree(repo, path, branch, base)
+	return offline, addWorktree(jail, repo, path, branch, base)
 }
 
 // filterPins returns -c arguments that turn every filter driver start could

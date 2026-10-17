@@ -54,7 +54,11 @@ func New(c *Config, opts CreateOptions) (*Instance, *SyncReport, error) {
 	}
 	// Create the meta-worktree (checks out the stack's tracked files), from
 	// the pinned origin when there is one (createWorktree).
-	if _, err := createWorktree(stack.Path, root, "st/"+name, stack.Origin); err != nil {
+	jail, err := c.gitJail()
+	if err != nil {
+		return nil, nil, err
+	}
+	if _, err := createWorktree(jail.reading(stack.Origin), stack.Path, root, "st/"+name, stack.Origin); err != nil {
 		return nil, nil, fmt.Errorf("create supatree worktree: %w", err)
 	}
 

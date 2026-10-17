@@ -55,7 +55,7 @@ func TestFilterPinsNeutraliseAPlantedFilter(t *testing.T) {
 func TestAddWorktreeRefusesAConfiguredFilter(t *testing.T) {
 	testutil.IsolateHome(t)
 	repo, marker := filterRepo(t, "evil")
-	if err := addWorktree(repo, filepath.Join(t.TempDir(), "wt"), "t", "HEAD"); err == nil {
+	if err := addWorktree(testJail, repo, filepath.Join(t.TempDir(), "wt"), "t", "HEAD"); err == nil {
 		t.Error("checked out a repository whose config defines a filter")
 	}
 	if _, err := os.Stat(marker); err == nil {
@@ -93,7 +93,7 @@ func TestCreateWorktreeFetchesFromThePinnedURL(t *testing.T) {
 	run(t, stack, "remote", "set-url", "origin", "/nonexistent/decoy.git")
 
 	wt := filepath.Join(t.TempDir(), "tree")
-	offline, err := createWorktree(stack, wt, "st/tree", bare)
+	offline, err := createWorktree(testJail, stack, wt, "st/tree", bare)
 	if err != nil || offline {
 		t.Fatalf("createWorktree = offline %v, %v", offline, err)
 	}
@@ -110,7 +110,7 @@ func TestCreateWorktreeFailsClosedOnThePinnedURL(t *testing.T) {
 	stack := filepath.Join(t.TempDir(), "stack")
 	run(t, filepath.Dir(stack), "clone", "-q", upstream, stack)
 	wt := filepath.Join(t.TempDir(), "tree")
-	if _, err := createWorktree(stack, wt, "st/tree", "/nonexistent/stack.git"); err == nil {
+	if _, err := createWorktree(testJail, stack, wt, "st/tree", "/nonexistent/stack.git"); err == nil {
 		t.Fatal("built a tree from local refs when the pinned origin could not be reached")
 	}
 	if _, err := os.Stat(wt); err == nil {
@@ -150,7 +150,7 @@ func TestAddWorktreeIgnoresReplaceRefs(t *testing.T) {
 	run(t, repo, "replace", real, evil)
 
 	wt := filepath.Join(t.TempDir(), "wt")
-	if err := addWorktree(repo, wt, "t", real); err != nil {
+	if err := addWorktree(testJail, repo, wt, "t", real); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(wt, "REAL.md")); err != nil {
