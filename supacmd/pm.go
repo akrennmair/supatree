@@ -142,9 +142,28 @@ var pmConfigCmd = &cobra.Command{
 		"  pms/<name>/settings.json  Claude settings for that PM alone\n\n" +
 		"PMs read it and cannot write it. A git URL is cloned to ~/supatree/pm-config.\n" +
 		"Changes are picked up when a PM is next opened; `supatree pm ls` shows which\n" +
-		"PMs are running an older commit. With no argument, prints the current repo.",
+		"PMs are running an older commit. With no argument, prints the current repo.\n\n" +
+		"--init creates one at ~/supatree/pm-config — a README describing the layout\n" +
+		"and an empty pms/, committed — and registers it. It changes nothing about how\n" +
+		"the PMs behave until you commit instructions, skills or settings to it.",
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if pmConfigInit {
+			if len(args) > 0 {
+				return fmt.Errorf("--init always creates %s; to use another repo, pass its path without --init", supatree.DefaultPMConfigPath())
+			}
+			if stCfg.PMConfig != "" {
+				return fmt.Errorf("a PM config repo is already registered: %s", stCfg.PMConfig)
+			}
+			dir, err := supatree.InitPMConfig()
+			if err != nil {
+				return err
+			}
+			fmt.Printf("created and registered PM config repo: %s\n"+
+				"Commit AGENTS.md, .claude/ or pms/<name>/ there (see its README), then reopen a PM.\n"+
+				"To keep it elsewhere: git -C %s remote add origin <url> && git -C %s push -u origin main\n", dir, dir, dir)
+			return nil
+		}
 		if len(args) == 0 {
 			if stCfg.PMConfig == "" {
 				fmt.Println("no PM config repo — set one with: supatree pm config <path | git-url>")
@@ -177,6 +196,8 @@ var pmConfigCmd = &cobra.Command{
 		return nil
 	},
 }
+
+var pmConfigInit bool
 
 var pmRequestFrom string
 
@@ -212,6 +233,7 @@ var (
 
 func init() {
 	pmNewCmd.Flags().StringVar(&pmNewModel, "model", "", "model entry to run this PM under (default: the PM model)")
+	pmConfigCmd.Flags().BoolVar(&pmConfigInit, "init", false, "create a PM config repo at ~/supatree/pm-config and register it")
 	pmCmd.AddCommand(pmNewCmd, pmRmCmd, pmLsCmd, pmConfigCmd)
 	requestCmd.Flags().StringVar(&pmRequestTo, "to", "", "PM the request is for (default: the top PM)")
 	requestCmd.Flags().StringVar(&pmRequestFrom, "from", "cli", "who is asking")
