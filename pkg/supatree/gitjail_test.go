@@ -38,11 +38,14 @@ func TestGitJailCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A local origin is readable, a remote one needs nothing.
-	want := []string{"nono", "run", "--silent", "--no-rollback", "--profile", AgentProfileName,
+	want := []string{"nono", "run", "--silent", "--no-rollback", "--allow-cwd", "--profile", AgentProfileName,
 		"--read", repo, "--read", origin, "--allow", common, "--allow", wt,
 		"--", "git", "-C", repo, "fetch", "origin"}
 	if got := append([]string{filepath.Base(cmd.Path)}, cmd.Args[1:]...); strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Errorf("command = %v\nwant      %v", got, want)
+	}
+	if cmd.Dir != repo {
+		t.Errorf("runs from %q, want the repository: nono grants the working directory", cmd.Dir)
 	}
 }
 
@@ -63,29 +66,58 @@ func TestGitJailWithoutAProfileRefuses(t *testing.T) {
 	}
 }
 
-// With an enforcing nono and the agents' profile installed, a filter driver
-// planted in the repository's config — the race RequireSafeRepo cannot close —
-// runs confined: it cannot write outside what the jail grants.
+// With an enforcing nono, a filter driver planted in the repository's config
+// — the race RequireSafeRepo cannot close — runs confined: it cannot write
+// outside what the jail grants.
+//
+// It uses nono's built-in default profile: tests run with an isolated HOME,
+// where the agents' profile is not installed. The marker goes in the package
+// directory, not under $TMPDIR, which nono's base profiles leave writable.
 func TestGitJailConfinesAPlantedFilter(t *testing.T) {
 	if os.Getenv("NONO_CAP_FILE") != "" {
 		t.Skip("already inside a nono sandbox; a nested one cannot start")
 	}
-	if err := exec.CommandContext(context.Background(), "nono", "run", "--silent", "--profile", AgentProfileName, "--", "true").Run(); err != nil {
-		t.Skipf("no enforcing nono with profile %s here: %v", AgentProfileName, err)
+	jail := gitJail{profile: "default"}
+	probe := exec.CommandContext(context.Background(), "nono", "run", "--silent", "--allow-cwd", "--profile", jail.profile, "--", "true")
+	probe.Dir = t.TempDir()
+	if out, err := probe.CombinedOutput(); err != nil {
+		t.Skipf("no usable nono here: %v: %s", err, out)
 	}
 	withoutSandbox(t)
-	repo, marker := filterRepo(t, "evil")
-	// Straight to git, past addWorktree's pins and checks: this is git
-	// meeting the filter in the window after them.
+	outside, err := os.MkdirTemp(".", ".jailtest-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outside, err = filepath.Abs(outside); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(outside) })
+	marker := filepath.Join(outside, "ran")
+
+	repo, _ := filterRepo(t, "evil")
+	// The filter still passes the content through, so a checkout that runs
+	// at all completes, and the test can tell confinement from git failing.
+	run(t, repo, "config", "filter.evil.smudge", "touch "+marker+"; cat")
+	run(t, repo, "config", "--unset", "filter.evil.process")
 	wt := filepath.Join(t.TempDir(), "wt")
 	if err := os.MkdirAll(wt, 0755); err != nil {
 		t.Fatal(err)
 	}
-	cmd, err := testJail.command(context.Background(), repo, []string{wt}, "worktree", "add", "-b", "t", wt, "HEAD")
+	// Straight to git, past addWorktree's pins and checks: this is git
+	// meeting the filter in the window after them.
+	cmd, err := jail.command(context.Background(), repo, []string{wt}, "worktree", "add", "-b", "t", wt, "HEAD")
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = cmd.Run()
+	// The user's git config is outside the default profile, and git stops
+	// at a config file it may not read.
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("confined git worktree add: %v: %s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(wt, "x.txt")); err != nil {
+		t.Fatalf("the checkout did not happen, so confinement is unproven: %v", err)
+	}
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatalf("a filter run by confined git wrote %s, outside the jail", marker)
 	}

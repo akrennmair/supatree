@@ -79,7 +79,11 @@ func (j gitJail) command(ctx context.Context, repo string, writable []string, ar
 		return nil, err
 	}
 	nonoArgs = append(append(nonoArgs, "--", "git"), gitArgs...)
-	return exec.CommandContext(ctx, "nono", nonoArgs...), nil
+	cmd := exec.CommandContext(ctx, "nono", nonoArgs...)
+	// Run from the repository, which the jail reads anyway: nono grants the
+	// working directory too, and the watcher's own may be anywhere — a tree.
+	cmd.Dir = repo
+	return cmd, nil
 }
 
 // nonoArgs are the `nono run` arguments up to, not including, the "--".
@@ -88,7 +92,9 @@ func (j gitJail) nonoArgs(repo string, writable []string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("find %s's git dir: %w", repo, err)
 	}
-	args := []string{"run", "--silent", "--no-rollback", "--profile", j.profile, "--read", filepath.Clean(repo)}
+	// --allow-cwd: the cwd is repo (command), read-only, as granted below.
+	// Without it a non-interactive nono refuses to start.
+	args := []string{"run", "--silent", "--no-rollback", "--allow-cwd", "--profile", j.profile, "--read", filepath.Clean(repo)}
 	for _, r := range j.reads {
 		args = append(args, "--read", r)
 	}
