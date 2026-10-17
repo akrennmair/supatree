@@ -37,7 +37,9 @@ const PMAddress = "st-pm"
 func PMGrants(cfg *Config) sandbox.Grants {
 	g := sandbox.Grants{
 		Allow: []string{PMDir(), TreesStateDir(), OutboxDir()},
-		Read:  []string{cfg.ResolveTreesBase(), LedgerDir(), RequestsDir()},
+		// The roster, not the registry it is published from: the PM learns
+		// who the PMs are without being able to rewrite them (#23).
+		Read: []string{cfg.ResolveTreesBase(), LedgerDir(), RequestsDir(), RosterDir()},
 	}
 	// Read, never written: a PM editing the skills and settings that govern
 	// it would be a PM widening its own permissions.

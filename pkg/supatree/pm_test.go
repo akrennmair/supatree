@@ -41,6 +41,18 @@ func TestPMGrants(t *testing.T) {
 	if len(g.Read) == 0 {
 		t.Error("Read is empty — the PM cannot see the trees at all")
 	}
+	// The PM reads the roster, and can write neither it nor the registry
+	// it is published from (#23).
+	if !strings.Contains(strings.Join(g.Read, " "), RosterDir()) {
+		t.Errorf("Read = %v, want the roster %s", g.Read, RosterDir())
+	}
+	for _, w := range g.Allow {
+		for _, p := range []string{PMsPath(), PMRosterPath()} {
+			if p == w || strings.HasPrefix(p, w+"/") {
+				t.Errorf("Allow includes %q, which covers %s", w, p)
+			}
+		}
+	}
 	// Every cached clone's git dir is read — not only those of trees that
 	// existed at launch, or the grant goes stale under a running PM and
 	// refreshing it means relaunching (#3) — and never a clone's working tree,
