@@ -317,3 +317,84 @@ func TestPublishPMRoster(t *testing.T) {
 		t.Errorf("roster = %+v, %v; want both PMs", roster, err)
 	}
 }
+
+// A registry from before #23 sat in the PMs' writable home. It is moved out
+// once, keeping what `pm new` would have written and nothing else, and what a
+// PM writes there afterwards is never read.
+func TestLegacyPMRegistryIsMigratedOnce(t *testing.T) {
+	testutil.IsolateHome(t)
+	const sid = "0f8fad5b-d9cb-469f-a165-70867728950e"
+	writeFile(t, legacyPMsPath(), `pms:
+  - name: scout
+    session_id: not-a-session
+    model: loose
+    config_at: deadbeef
+  - name: pm
+    session_id: `+sid+`
+  - name: ../escape
+    session_id: `+sid+`
+  - name: scout
+    session_id: `+sid+`
+`)
+	pms, err := LoadPMs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pms) != 2 || pms[0].Name != DefaultPMName || pms[1].Name != "scout" {
+		t.Fatalf("pms = %+v, want pm then scout", pms)
+	}
+	if pms[0].SessionID != sid {
+		t.Errorf("the top PM's session = %q, want it kept", pms[0].SessionID)
+	}
+	if pms[1].SessionID == "not-a-session" || !sessionIDPattern.MatchString(pms[1].SessionID) {
+		t.Errorf("scout's session = %q, want a fresh one in place of what the PM wrote", pms[1].SessionID)
+	}
+	if pms[1].Model != "" || pms[1].ConfigAt != "" {
+		t.Errorf("scout kept model %q, config_at %q from a PM-writable file", pms[1].Model, pms[1].ConfigAt)
+	}
+	if _, err := os.Stat(legacyPMsPath()); !os.IsNotExist(err) {
+		t.Errorf("the old registry is still there: %v", err)
+	}
+	if _, ok := LegacyPMRegistry(); ok {
+		t.Error("doctor would flag a registry that was just migrated")
+	}
+
+	// A PM writing the old file again changes nothing, and doctor says so.
+	writeFile(t, legacyPMsPath(), "pms:\n  - name: usurper\n    session_id: "+sid+"\n")
+	again, err := LoadPMs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again) != 2 || again[0].Name != DefaultPMName {
+		t.Errorf("after a PM rewrote the old file, pms = %+v", again)
+	}
+	if _, ok := LegacyPMRegistry(); !ok {
+		t.Error("doctor would not flag an old registry written after the migration")
+	}
+}
+
+// Inside the PM's sandbox the registry cannot be read; request routing works
+// from the roster instead.
+func TestRoutingPMsFallsBackToTheRoster(t *testing.T) {
+	testutil.IsolateHome(t)
+	if _, err := AddPM("roshi", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(PMsPath(), 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(PMsPath(), 0644) })
+	if _, err := os.ReadFile(PMsPath()); err == nil {
+		t.Skip("running as a user that can read a mode-0 file")
+	}
+	pms, err := RoutingPMs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pms) != 2 || pms[0].Name != DefaultPMName || pms[1].Name != "roshi" {
+		t.Errorf("pms = %+v, want pm then roshi from the roster", pms)
+	}
+	if p, err := ResolvePM("roshi"); err != nil || p.OffsetPath() != filepath.Join(PMDir(), "requests.roshi.offset") {
+		t.Errorf("ResolvePM(roshi) = %+v, %v", p, err)
+	}
+}

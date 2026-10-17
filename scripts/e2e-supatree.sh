@@ -38,6 +38,18 @@ git config --global init.defaultBranch main
 
 fail() { echo "FAIL: $1"; exit 1; }
 
+# Creating a tree runs its fetch and checkout under nono, with the agents'
+# profile (#21), so that profile must exist before the first `supatree new`.
+# supatree-agent extends claude-code, which current nono installs on first use
+# and, with no TTY, only when told it may. Inside a sandbox already, git runs
+# under that one instead; with no nono at all, trees cannot be created.
+if [ -n "$ENFORCE" ]; then
+    export NONO_AUTO_MIGRATE=1
+    supatree init >/dev/null 2>&1 || fail "supatree init failed"
+elif [ -z "${NONO_CAP_FILE:-}" ]; then
+    fail "nono is required: supatree creates trees with git confined by it"
+fi
+
 # Note: pipe into plain `grep`, never `grep -q`. Under `set -o pipefail`, -q
 # exits on the first match, the Go process writing to the pipe dies of SIGPIPE
 # (141), and the pipeline fails even though the assertion passed. It is rare
@@ -286,10 +298,6 @@ supatree rm riga -y --force >/dev/null
 # and check the boundary holds (see ENFORCE at the top).
 echo "--- sandbox enforcement ---"
 if [ -n "$ENFORCE" ]; then
-    # supatree-agent extends claude-code, which current nono installs on first
-    # use and, with no TTY, only when told it may.
-    export NONO_AUTO_MIGRATE=1
-    supatree init >/dev/null 2>&1 || fail "supatree init failed"
     supatree new --stack=s --name=lima >/dev/null
     supatree new --stack=s --name=quito >/dev/null
     LIMA="$HOME/supatree/trees/lima"

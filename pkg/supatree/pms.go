@@ -2,9 +2,13 @@ package supatree
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -80,8 +84,18 @@ func (p PM) ModelKey(cfg *Config) string {
 	return cfg.PMModel()
 }
 
-// PMsPath is the PM registry, in the PMs' shared home.
+// PMsPath is the PM registry. It is in the state root, which no sandbox is
+// granted, and not in the PMs' shared home, which every PM can write: the
+// sidebar, CLI and watcher act on it — which session to resume, which PM is
+// on top, which model and nono profile it runs under — so a PM that could
+// edit it could steer them (#23). PMs read the roster published from it.
 func PMsPath() string {
+	return filepath.Join(StateRoot(), "pms.yml")
+}
+
+// legacyPMsPath is where the registry lived before #23, in the PMs' home.
+// Once migrated, anything found there is a PM's doing and is never read.
+func legacyPMsPath() string {
 	return filepath.Join(PMDir(), "pms.yml")
 }
 
@@ -114,6 +128,10 @@ func LoadPMs() ([]PM, error) {
 		if len(got) > 0 {
 			out = got
 			return nil
+		}
+		if got, err := migrateLegacyPMs(); err != nil || len(got) > 0 {
+			out = got
+			return err
 		}
 		def, err := defaultPM()
 		if err != nil {
@@ -156,9 +174,103 @@ func readPMs() ([]PM, error) {
 	return f.PMs, nil
 }
 
+// migrateLegacyPMs moves a registry from before #23 out of the PMs' home.
+// Callers hold the registry lock and have found no registry of their own.
+//
+// The old file was PM-writable, so only what a PM could not have used to
+// steer the unsandboxed side survives: the names `pm new` would accept, once
+// each, the default PM on top where it was listed, and session IDs of the
+// shape supatree makes. Model and ConfigAt are dropped, so every PM runs under
+// the configured PM model until a human says otherwise — a PM could have
+// picked a looser nono profile for itself. What was reset is logged. The file
+// is then removed, so a PM writing it again changes nothing.
+func migrateLegacyPMs() ([]PM, error) {
+	data, err := os.ReadFile(legacyPMsPath())
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read the old PM registry: %w", err)
+	}
+	var f pmsFile
+	if err := yaml.Unmarshal(data, &f); err != nil {
+		return nil, fmt.Errorf("parse the old PM registry %s: %w", legacyPMsPath(), err)
+	}
+	var pms []PM
+	var reset []string
+	seen := map[string]bool{}
+	for _, p := range f.PMs {
+		if seen[p.Name] || (p.Name != DefaultPMName && ValidatePMName(p.Name) != nil) {
+			continue
+		}
+		seen[p.Name] = true
+		if p.Model != "" {
+			reset = append(reset, p.Name+" (model "+strconv.Quote(p.Model)+")")
+		}
+		p.Model, p.ConfigAt = "", ""
+		if !sessionIDPattern.MatchString(p.SessionID) {
+			// Not one supatree made: start this PM afresh rather than resume
+			// whatever it names.
+			sid, err := newSessionID()
+			if err != nil {
+				return nil, err
+			}
+			p.SessionID = sid
+		}
+		pms = append(pms, p)
+	}
+	if len(pms) == 0 {
+		return nil, os.Remove(legacyPMsPath())
+	}
+	for i, p := range pms {
+		if p.Name == DefaultPMName && i > 0 {
+			pms = append([]PM{p}, append(pms[:i:i], pms[i+1:]...)...)
+			break
+		}
+	}
+	if len(reset) > 0 {
+		logLaunch("PM registry", PMTab, "migrated out of the PMs' home; reset to the configured PM model: "+strings.Join(reset, ", "))
+	}
+	if err := savePMs(pms); err != nil {
+		return nil, err
+	}
+	return pms, os.Remove(legacyPMsPath())
+}
+
+var sessionIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// LegacyPMRegistry reports a PM registry in the PMs' home. After migration
+// nothing reads it, so one that exists was written there since — by a PM.
+// Before the first migration it is the real registry, and is not reported.
+func LegacyPMRegistry() (string, bool) {
+	_, legacy := os.Stat(legacyPMsPath())
+	_, current := os.Stat(PMsPath())
+	return legacyPMsPath(), legacy == nil && current == nil
+}
+
+// RoutingPMs is the PM list as request routing needs it: names, top first,
+// nothing of sessions. Outside a sandbox that is the registry. Inside the PM's
+// sandbox the registry is out of reach, and it is the roster published from
+// it, which the PM can read but not write.
+func RoutingPMs() ([]PM, error) {
+	pms, err := LoadPMs()
+	if err == nil || !errors.Is(err, fs.ErrPermission) {
+		return pms, err
+	}
+	roster, rerr := ReadPMRoster()
+	if rerr != nil || len(roster) == 0 {
+		return nil, err
+	}
+	out := make([]PM, len(roster))
+	for i, r := range roster {
+		out[i] = PM{Name: r.Name}
+	}
+	return out, nil
+}
+
 func savePMs(pms []PM) error {
-	if err := os.MkdirAll(PMDir(), 0755); err != nil {
-		return fmt.Errorf("create PM dir: %w", err)
+	if err := os.MkdirAll(filepath.Dir(PMsPath()), 0755); err != nil {
+		return fmt.Errorf("create the PM registry dir: %w", err)
 	}
 	data, err := yaml.Marshal(pmsFile{PMs: pms})
 	if err != nil {
@@ -247,8 +359,11 @@ func FindPM(pms []PM, name string) *PM {
 }
 
 // ResolvePM returns the PM named name, or the top PM when name is empty.
+//
+// Inside the PM's sandbox it comes from the roster and carries the name alone,
+// with no session; that is all the PM's own tools need of it.
 func ResolvePM(name string) (PM, error) {
-	pms, err := LoadPMs()
+	pms, err := RoutingPMs()
 	if err != nil {
 		return PM{}, err
 	}

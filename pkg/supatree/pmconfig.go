@@ -214,9 +214,10 @@ func SetPMConfigAt(name, sha string) error {
 // pmSettingsArgs are the extra launch arguments for pm: its own settings file
 // from the config repo, for a claude model.
 //
-// The name comes from pms.yml, which sits in the PM's own (writable) home, so
-// it is validated and the path held inside the repo's pms/ — a name like
-// "../../x" must not point --settings at a file a PM wrote.
+// The name comes from pms.yml. No PM can write that any more (#23), but one
+// from before then was PM-writable, so the name is still validated and the
+// path held inside the repo's pms/ — a name like "../../x" must not point
+// --settings at a file a PM wrote.
 func pmSettingsArgs(repo, binary string, pm PM) []string {
 	if repo == "" || filepath.Base(binary) != "claude" || git.ValidateName(pm.Name, nil) != nil {
 		return nil

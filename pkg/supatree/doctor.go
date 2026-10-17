@@ -23,6 +23,14 @@ func Doctor(cfg *Config) []setup.CheckResult {
 		toolCheck("git", "", "version"),
 		toolCheck("nono", "install from https://nono.sh", "--version"),
 	}
+	if path, ok := LegacyPMRegistry(); ok {
+		results = append(results, setup.CheckResult{
+			Name:    "PM registry",
+			Status:  setup.StatusWarn,
+			Message: path + " exists. The registry moved to " + PMsPath() + " and nothing reads this one, so a PM wrote it",
+			Hint:    "look at what it says, then delete it",
+		})
+	}
 	if results[2].Status != setup.StatusOK {
 		return results
 	}

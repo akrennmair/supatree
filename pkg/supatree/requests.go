@@ -63,7 +63,7 @@ type readOffset struct {
 // start rather than seeking past the end — losing the backlog is the failure
 // this whole design exists to avoid.
 func PendingRequests(pm string) ([]Request, int64, error) {
-	pms, err := LoadPMs()
+	pms, err := RoutingPMs()
 	if err != nil {
 		return nil, 0, err
 	}
