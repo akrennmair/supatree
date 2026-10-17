@@ -67,6 +67,7 @@ supatree watch                                  # background poller: activity le
 supatree comments <tree> <repo>                 # what reviewers said, with unresolved threads first
 supatree pm [name]                              # a PM agent — sees every supatree at once
 supatree pm new <name> / pm rm <name> / pm ls   # several PMs, top first
+supatree pm config --init                       # a versioned repo for the PMs' instructions, skills, settings
 supatree request "…"                            # queue something for the PM
 supatree schedule                               # recurring PM work (standups, triage, reminders)
 supatree message <tree> <agent> "…"             # leave a message in an agent's mailbox
@@ -176,7 +177,18 @@ pm_model: claude-pm     # a models entry whose nono_profile scopes the gh creden
 
 It also cannot notify you directly — nothing inside the sandbox can — so its `notify` tool queues through the watcher, which applies the same tiering and deduping as its own events.
 
-**Several PMs.** `supatree pm new <name>` (or `a` on the sidebar's PM section) adds a PM below the others; `supatree pm rm <name>` (or `d`) removes one and closes its tab, and the last one cannot be removed. They all run in `~/.local/state/supatree/pm` with the same grants and instructions, and each resumes its own conversation by session ID; the list lives in `~/.local/state/supatree/pms.yml`, top first, outside the PMs' home so no PM can rewrite it (`supatree doctor` flags a `pm/pms.yml` that reappears there). Requests are routed rather than shared: each PM reads the queue from its own offset and keeps what is addressed to it (`supatree request --to <name>`), and the **top** PM also takes everything addressed to nobody — the watcher, the scheduler, `m` — so two PMs never both act on one request. Tree agents reach the top PM as `pm` and any other as `pm-<name>`, through `message_agent`; the `agents` tool lists the PMs, from a roster (`~/.local/state/supatree/roster/pms.json`) republished on every registry change and granted to tree agents read-only, since the registry itself is not. The PM from before there were several stays as `pm`, with its old tab, address and conversation.
+**Several PMs.** `supatree pm new <name>` (or `p` in the sidebar) adds a PM below the others; `supatree pm rm <name>` (or `d`) removes one and closes its tab, and the last one cannot be removed. They all run in `~/.local/state/supatree/pm` with the same grants and base instructions, and each resumes its own conversation by session ID; the list lives in `~/.local/state/supatree/pms.yml`, top first, outside the PMs' home so no PM can rewrite it (`supatree doctor` flags a `pm/pms.yml` that reappears there). Requests are routed rather than shared: each PM reads the queue from its own offset and keeps what is addressed to it (`supatree request --to <name>`), and the **top** PM also takes everything addressed to nobody — the watcher, the scheduler, `m` — so two PMs never both act on one request. Tree agents reach the top PM as `pm` and any other as `pm-<name>`, through `message_agent`; the `agents` tool lists the PMs, from a roster (`~/.local/state/supatree/roster/pms.json`) republished on every registry change and granted to tree agents read-only, since the registry itself is not. The PM from before there were several stays as `pm`, with its old tab, address and conversation.
+
+**The PM config repo.** A PM's home is runtime state, so nothing in it can be committed, shared or differ between PMs. What shapes them lives in a git repo you own instead, which every PM reads at launch and none can write:
+
+```
+AGENTS.md                 appended to every PM's instructions
+.claude/                  skills, commands, settings.json, hooks — linked into the PMs' home
+pms/<name>/AGENTS.md      instructions for the PM called <name> alone ("pm" is the default PM)
+pms/<name>/settings.json  Claude settings for that PM alone (--settings)
+```
+
+`supatree pm config --init` creates one at `~/supatree/pm-config` — a README and an empty `pms/`, committed — and registers it; until you commit something to it, the PMs behave exactly as before. `supatree pm config <path | git-url>` registers an existing one instead (a URL is cloned to the same place). Either way it is refused anywhere an agent can write — the stacks, the trees, the repo cache, supatree's state — and checked again at every launch. Changes reach a PM when it is next opened; `supatree pm ls` flags a PM running an older commit. Adding `.claude/` takes over the PMs' home `.claude`; what stood there is moved aside to `.claude.moved-<time>`.
 
 ## Autonomy
 

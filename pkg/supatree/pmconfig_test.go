@@ -153,3 +153,54 @@ func TestPMSettingsArgsStayInTheRepo(t *testing.T) {
 		}
 	}
 }
+
+// --init makes a committed, registered repo at the default path that changes
+// nothing about the PMs until something is committed to it.
+func TestInitPMConfig(t *testing.T) {
+	testutil.IsolateHome(t)
+	gitGlobal(t, "user.email", "t@example.com")
+	gitGlobal(t, "user.name", "t")
+	dir, err := InitPMConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dir != DefaultPMConfigPath() {
+		t.Errorf("dir = %s, want %s", dir, DefaultPMConfigPath())
+	}
+	cfg, _ := Load()
+	if usablePMConfig(cfg) == "" {
+		t.Error("the new repo was not registered")
+	}
+	if PMConfigHead(dir) == "" {
+		t.Error("the scaffold was not committed")
+	}
+	if _, err := os.Stat(filepath.Join(dir, pmConfigDirName)); err != nil {
+		t.Error("no pms/ dir")
+	}
+	if err := ScaffoldPM(); err != nil {
+		t.Fatal(err)
+	}
+	if md, _ := os.ReadFile(filepath.Join(PMDir(), AgentsMDName)); string(md) != pmAgentsMD {
+		t.Error("an empty scaffold changed the PMs' instructions")
+	}
+	if _, err := os.Lstat(filepath.Join(PMDir(), ".claude")); err == nil {
+		t.Error("an empty scaffold linked a .claude into the PMs' home")
+	}
+	if _, err := InitPMConfig(); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("second init: err = %v", err)
+	}
+}
+
+// The default path is refused, untouched, when it falls in agent-writable space.
+func TestInitPMConfigRefusesAgentWritablePlaces(t *testing.T) {
+	testutil.IsolateHome(t)
+	if err := withConfig(func(c *Config) error { c.TreesBase = WorkspaceDir(); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InitPMConfig(); err == nil || !strings.Contains(err.Error(), "agent can write") {
+		t.Errorf("err = %v", err)
+	}
+	if _, err := os.Lstat(DefaultPMConfigPath()); err == nil {
+		t.Error("a refused init still created the directory")
+	}
+}

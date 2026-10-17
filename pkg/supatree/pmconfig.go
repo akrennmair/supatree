@@ -68,6 +68,15 @@ func checkPMConfig(cfg *Config, dir string) (string, error) {
 	if !isGitRepo(real) {
 		return "", fmt.Errorf("%s is not a git repository — the PM config is versioned, so it has to be one", abs)
 	}
+	if err := pmConfigOverlap(cfg, real, abs); err != nil {
+		return "", err
+	}
+	return real, nil
+}
+
+// pmConfigOverlap refuses real (shown to the human as abs) when it lies in, or
+// holds, anything an agent can write.
+func pmConfigOverlap(cfg *Config, real, abs string) error {
 	// ReposDir: tree agents commit in the base clones there.
 	writable := []string{StacksDir(), cfg.ResolveTreesBase(), StateRoot(), CacheDir(), ReposDir()}
 	for _, s := range cfg.Stacks {
@@ -81,10 +90,88 @@ func checkPMConfig(cfg *Config, dir string) (string, error) {
 			rw = filepath.Clean(w)
 		}
 		if real == rw || underDir(rw, real) || underDir(real, rw) {
-			return "", fmt.Errorf("%s overlaps %s, which an agent can write — the PM config must be somewhere no PM can edit", abs, w)
+			return fmt.Errorf("%s overlaps %s, which an agent can write — the PM config must be somewhere no PM can edit", abs, w)
 		}
 	}
-	return real, nil
+	return nil
+}
+
+// pmConfigReadme is the whole of a scaffolded PM config repo, besides an empty
+// pms/. It deliberately carries no AGENTS.md and no .claude/: either would
+// change how the PMs behave (a .claude/ would even move the PMs' own aside),
+// and creating the repo should not — what governs the PMs is what you commit.
+const pmConfigReadme = `# PM config
+
+Versioned instructions, skills and settings for supatree's PMs. The PMs read
+this repo on every launch and cannot write it. Edit, commit, then reopen a PM
+(` + "`supatree pm ls`" + ` flags PMs running an older commit).
+
+    AGENTS.md                 appended to every PM's instructions
+    .claude/                  skills, commands, settings.json, hooks — linked
+                              into the PMs' home, so every PM loads them
+    pms/<name>/AGENTS.md      instructions for the PM called <name> alone
+                              ("pm" is the default PM)
+    pms/<name>/settings.json  Claude settings for that PM alone (--settings)
+
+Adding .claude/ replaces whatever is in the PMs' home .claude today; supatree
+moves that aside to .claude.moved-<time>, so merge anything you want to keep.
+
+To keep this repo on other machines, push it and run
+` + "`supatree pm config <git-url>`" + ` there.
+`
+
+// InitPMConfig creates a PM config repo at DefaultPMConfigPath — a README and
+// an empty pms/, committed — and registers it. It refuses a path that already
+// exists, and one an agent could write, before creating anything.
+func InitPMConfig() (string, error) {
+	cfg, err := Load()
+	if err != nil {
+		return "", err
+	}
+	dir := DefaultPMConfigPath()
+	if _, err := os.Lstat(dir); err == nil {
+		return "", fmt.Errorf("%s already exists — register it with: supatree pm config %s", dir, dir)
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	parent := filepath.Dir(dir)
+	if err := os.MkdirAll(parent, 0755); err != nil {
+		return "", err
+	}
+	realParent, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return "", err
+	}
+	if err := pmConfigOverlap(cfg, filepath.Join(realParent, filepath.Base(dir)), dir); err != nil {
+		return "", err
+	}
+	if err := os.Mkdir(dir, 0755); err != nil {
+		return "", err
+	}
+	if err := scaffoldPMConfig(dir); err != nil {
+		_ = os.RemoveAll(dir) // ours alone: it did not exist a moment ago
+		return "", err
+	}
+	if err := SetPMConfig(dir); err != nil {
+		return "", fmt.Errorf("created %s but could not register it: %w", dir, err)
+	}
+	return dir, nil
+}
+
+func scaffoldPMConfig(dir string) error {
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte(pmConfigReadme), 0644); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Join(dir, pmConfigDirName), 0755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, pmConfigDirName, ".gitkeep"), nil, 0644); err != nil {
+		return err
+	}
+	if err := initStackRepo(dir); err != nil {
+		return err
+	}
+	return commitAll(dir, "PM config: scaffold")
 }
 
 // usablePMConfig is the registered PM config repo, re-checked, or "" — with
