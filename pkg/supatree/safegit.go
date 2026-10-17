@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -72,7 +73,7 @@ func addWorktree(jail gitJail, repo, path, branch, start string) error {
 		_ = os.Remove(path)
 		return err
 	}
-	cmd.Env = append(os.Environ(), "GIT_ATTR_NOSYSTEM=1")
+	cmd.Env = append(envOf(cmd), "GIT_ATTR_NOSYSTEM=1")
 	var errBuf bytes.Buffer
 	cmd.Stderr = &errBuf
 	if err := cmd.Run(); err != nil {
@@ -93,9 +94,17 @@ func fetchGit(jail gitJail, repo string, args ...string) (string, error) {
 		return "", err
 	}
 	cmd.Stdin = nil
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = append(envOf(cmd), "GIT_TERMINAL_PROMPT=0")
 	out, err := cmd.CombinedOutput()
 	return strings.TrimSpace(string(out)), err
+}
+
+// envOf is cmd's environment so far, to add to rather than replace.
+func envOf(cmd *exec.Cmd) []string {
+	if cmd.Env != nil {
+		return cmd.Env
+	}
+	return os.Environ()
 }
 
 // fetchRef fetches ref from repo's origin, in jail, and returns the commit it

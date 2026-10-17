@@ -81,6 +81,11 @@ func (j gitJail) command(ctx context.Context, repo string, writable []string, ar
 	nonoArgs = append(append(nonoArgs, "--", "git"), gitArgs...)
 	cmd := exec.CommandContext(ctx, "nono", nonoArgs...)
 	cmd.Dir = cwd
+	// The system git config is outside what agent profiles read on Linux
+	// (/etc/gitconfig), and git stops at a config file it may not read.
+	// Nothing is lost: HardenGit has already carried the credential helpers
+	// and ssh command from it into the environment.
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1")
 	return cmd, nil
 }
 

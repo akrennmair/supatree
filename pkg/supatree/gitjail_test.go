@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -47,6 +48,9 @@ func TestGitJailCommand(t *testing.T) {
 	// nono grants the working directory, read-write under the agents'
 	// profile: it must be one the jail already writes, never the repo's
 	// working tree, which the jail only reads.
+	if !slices.Contains(cmd.Env, "GIT_CONFIG_NOSYSTEM=1") {
+		t.Error("confined git reads the system config, which agent profiles do not grant on Linux")
+	}
 	if cmd.Dir != wt {
 		t.Errorf("runs from %q, want the writable worktree %q", cmd.Dir, wt)
 	}
@@ -130,7 +134,7 @@ func TestGitJailConfinesAPlantedFilter(t *testing.T) {
 	}
 	// The user's git config is outside the default profile, and git stops
 	// at a config file it may not read.
-	cmd.Env = append(env, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+	cmd.Env = append(env, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("confined git worktree add: %v: %s", err, out)
 	}
