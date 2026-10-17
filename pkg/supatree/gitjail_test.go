@@ -71,19 +71,14 @@ func TestGitJailWithoutAProfileRefuses(t *testing.T) {
 // outside what the jail grants.
 //
 // It uses nono's built-in default profile: tests run with an isolated HOME,
-// where the agents' profile is not installed. The marker goes in the package
-// directory, not under $TMPDIR, which nono's base profiles leave writable.
+// where the agents' profile is not installed. Outside $TMPDIR — in the package
+// directory — go the marker, since nono's base profiles leave $TMPDIR
+// writable, and nono's own HOME, since nono refuses to start with its state
+// under a system path it grants (/private/var on macOS).
 func TestGitJailConfinesAPlantedFilter(t *testing.T) {
 	if os.Getenv("NONO_CAP_FILE") != "" {
 		t.Skip("already inside a nono sandbox; a nested one cannot start")
 	}
-	jail := gitJail{profile: "default"}
-	probe := exec.CommandContext(context.Background(), "nono", "run", "--silent", "--allow-cwd", "--profile", jail.profile, "--", "true")
-	probe.Dir = t.TempDir()
-	if out, err := probe.CombinedOutput(); err != nil {
-		t.Skipf("no usable nono here: %v: %s", err, out)
-	}
-	withoutSandbox(t)
 	outside, err := os.MkdirTemp(".", ".jailtest-")
 	if err != nil {
 		t.Fatal(err)
@@ -93,6 +88,20 @@ func TestGitJailConfinesAPlantedFilter(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(outside) })
 	marker := filepath.Join(outside, "ran")
+	home := filepath.Join(outside, "home")
+	env := append(os.Environ(), "HOME="+home,
+		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
+		"XDG_STATE_HOME="+filepath.Join(home, ".local", "state"),
+		"XDG_CACHE_HOME="+filepath.Join(home, ".cache"))
+
+	jail := gitJail{profile: "default"}
+	probe := exec.CommandContext(context.Background(), "nono", "run", "--silent", "--allow-cwd", "--profile", jail.profile, "--", "true")
+	probe.Dir = t.TempDir()
+	probe.Env = env
+	if out, err := probe.CombinedOutput(); err != nil {
+		t.Skipf("no usable nono here: %v: %s", err, out)
+	}
+	withoutSandbox(t)
 
 	repo, _ := filterRepo(t, "evil")
 	// The filter still passes the content through, so a checkout that runs
@@ -111,7 +120,7 @@ func TestGitJailConfinesAPlantedFilter(t *testing.T) {
 	}
 	// The user's git config is outside the default profile, and git stops
 	// at a config file it may not read.
-	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+	cmd.Env = append(env, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("confined git worktree add: %v: %s", err, out)
 	}
