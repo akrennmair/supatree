@@ -74,27 +74,36 @@ func (j gitJail) command(ctx context.Context, repo string, writable []string, ar
 	if j.profile == "" {
 		return nil, errors.New("refusing to run git unconfined in a repository agents can write: no nono profile")
 	}
-	nonoArgs, err := j.nonoArgs(repo, writable)
+	nonoArgs, cwd, err := j.nonoArgs(repo, writable)
 	if err != nil {
 		return nil, err
 	}
 	nonoArgs = append(append(nonoArgs, "--", "git"), gitArgs...)
 	cmd := exec.CommandContext(ctx, "nono", nonoArgs...)
-	// Run from the repository, which the jail reads anyway: nono grants the
-	// working directory too, and the watcher's own may be anywhere — a tree.
-	cmd.Dir = repo
+	cmd.Dir = cwd
 	return cmd, nil
 }
 
-// nonoArgs are the `nono run` arguments up to, not including, the "--".
-func (j gitJail) nonoArgs(repo string, writable []string) ([]string, error) {
+// nonoArgs are the `nono run` arguments up to, not including, the "--", and
+// the directory to run nono from.
+//
+// A non-interactive nono refuses to start unless the working directory is
+// granted (--allow-cwd), and grants it at the level the profile sets — read-
+// write under the agents' profile. So the working directory is one the jail
+// already makes writable: the first of writable, else the common git dir.
+// Never repo itself, whose working tree (a base clone's holds the files
+// copy_files hands out) the jail only reads; nor the watcher's own, which
+// may be anywhere.
+func (j gitJail) nonoArgs(repo string, writable []string) (args []string, cwd string, err error) {
 	common, err := GitCommonDir(repo)
 	if err != nil {
-		return nil, fmt.Errorf("find %s's git dir: %w", repo, err)
+		return nil, "", fmt.Errorf("find %s's git dir: %w", repo, err)
 	}
-	// --allow-cwd: the cwd is repo (command), read-only, as granted below.
-	// Without it a non-interactive nono refuses to start.
-	args := []string{"run", "--silent", "--no-rollback", "--allow-cwd", "--profile", j.profile, "--read", filepath.Clean(repo)}
+	cwd = common
+	if len(writable) > 0 {
+		cwd = filepath.Clean(writable[0])
+	}
+	args = []string{"run", "--silent", "--no-rollback", "--allow-cwd", "--profile", j.profile, "--read", filepath.Clean(repo)}
 	for _, r := range j.reads {
 		args = append(args, "--read", r)
 	}
@@ -102,5 +111,5 @@ func (j gitJail) nonoArgs(repo string, writable []string) ([]string, error) {
 	for _, w := range writable {
 		args = append(args, "--allow", filepath.Clean(w))
 	}
-	return args, nil
+	return args, cwd, nil
 }

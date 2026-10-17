@@ -44,8 +44,18 @@ func TestGitJailCommand(t *testing.T) {
 	if got := append([]string{filepath.Base(cmd.Path)}, cmd.Args[1:]...); strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Errorf("command = %v\nwant      %v", got, want)
 	}
-	if cmd.Dir != repo {
-		t.Errorf("runs from %q, want the repository: nono grants the working directory", cmd.Dir)
+	// nono grants the working directory, read-write under the agents'
+	// profile: it must be one the jail already writes, never the repo's
+	// working tree, which the jail only reads.
+	if cmd.Dir != wt {
+		t.Errorf("runs from %q, want the writable worktree %q", cmd.Dir, wt)
+	}
+	fetch, err := testJail.command(context.Background(), repo, nil, "fetch", "origin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fetch.Dir != common {
+		t.Errorf("a fetch runs from %q, want the git dir %q it writes anyway", fetch.Dir, common)
 	}
 }
 
