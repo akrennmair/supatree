@@ -87,14 +87,21 @@ func codexConfigPath() string {
 	return filepath.Join(home, ".codex", "config.toml")
 }
 
-// CodexShellCheck reports whether the commands a codex agent runs can reach
-// the SSH agent.
+// codexAgentEnv are the variables a codex agent's commands need from the
+// environment supatree and nono launch it with, and what breaks without each.
+var codexAgentEnv = []struct{ name, need string }{
+	{"SSH_AUTH_SOCK", "git and ssh have no agent socket, fall back to reading the private key, and the sandbox refuses: pushes fail"},
+	{"NONO_CAP_FILE", "nono why --self reports NOT SANDBOXED, so the agent cannot tell a sandbox denial from any other"},
+}
+
+// CodexShellCheck reports whether the commands a codex agent runs see the
+// variables in codexAgentEnv.
 func CodexShellCheck() setup.CheckResult {
-	const name = "codex shell SSH_AUTH_SOCK"
+	const name = "codex shell environment"
 	cfgPath := codexConfigPath()
 	data, err := os.ReadFile(cfgPath)
 	if errors.Is(err, fs.ErrNotExist) {
-		return setup.CheckResult{Name: name, Status: setup.StatusOK, Message: "no Codex config: commands inherit it"}
+		return setup.CheckResult{Name: name, Status: setup.StatusOK, Message: "no Codex config: commands inherit everything"}
 	}
 	if err != nil {
 		return setup.CheckResult{Name: name, Status: setup.StatusWarn, Message: err.Error()}
@@ -105,13 +112,20 @@ func CodexShellCheck() setup.CheckResult {
 	if err := toml.Unmarshal(data, &doc); err != nil {
 		return setup.CheckResult{Name: name, Status: setup.StatusWarn, Message: fmt.Sprintf("%s: %v", cfgPath, err)}
 	}
-	if ok, why := doc.Policy.keeps("SSH_AUTH_SOCK"); !ok {
+	var problems, missing []string
+	for _, v := range codexAgentEnv {
+		if ok, why := doc.Policy.keeps(v.name); !ok {
+			problems = append(problems, fmt.Sprintf("%s (%s): %s", v.name, why, v.need))
+			missing = append(missing, fmt.Sprintf("%q", v.name))
+		}
+	}
+	if len(problems) > 0 {
 		return setup.CheckResult{
 			Name:    name,
 			Status:  setup.StatusWarn,
-			Message: "commands Codex runs do not see SSH_AUTH_SOCK (" + why + " in [shell_environment_policy]), so codex agents cannot push over ssh",
-			Hint:    "in " + cfgPath + ", [shell_environment_policy]: inherit = \"all\" and add \"SSH_AUTH_SOCK\" to include_only",
+			Message: "commands Codex runs do not see " + strings.Join(problems, "; "),
+			Hint:    "in " + cfgPath + ", [shell_environment_policy]: inherit = \"all\" and add " + strings.Join(missing, ", ") + " to include_only (if you use one)",
 		}
 	}
-	return setup.CheckResult{Name: name, Status: setup.StatusOK, Message: "commands Codex runs see it"}
+	return setup.CheckResult{Name: name, Status: setup.StatusOK, Message: "commands Codex runs see SSH_AUTH_SOCK and NONO_CAP_FILE"}
 }

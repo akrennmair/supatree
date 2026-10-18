@@ -3,6 +3,7 @@ package supatree
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/panamafrancis/workbench/pkg/setup"
@@ -58,7 +59,13 @@ func TestCodexShellCheckReadsConfig(t *testing.T) {
 	if r := CodexShellCheck(); r.Status != setup.StatusWarn || r.Hint == "" {
 		t.Errorf("core policy: %+v, want a warning with a hint", r)
 	}
+	// SSH_AUTH_SOCK alone is not enough: without NONO_CAP_FILE the agent's
+	// nono why --self reports NOT SANDBOXED.
 	write("[shell_environment_policy]\ninherit = \"all\"\ninclude_only = [\"PATH\", \"HOME\", \"SSH_AUTH_SOCK\"]\n")
+	if r := CodexShellCheck(); r.Status != setup.StatusWarn || !strings.Contains(r.Message, "NONO_CAP_FILE") || strings.Contains(r.Message, "SSH_AUTH_SOCK (") {
+		t.Errorf("policy without NONO_CAP_FILE: %+v", r)
+	}
+	write("[shell_environment_policy]\ninherit = \"all\"\ninclude_only = [\"PATH\", \"HOME\", \"SSH_AUTH_SOCK\", \"NONO_CAP_FILE\"]\n")
 	if r := CodexShellCheck(); r.Status != setup.StatusOK {
 		t.Errorf("fixed policy: %+v", r)
 	}

@@ -364,19 +364,23 @@ For Codex agents:
    daemon can have it run commands with your full permissions. A hand-written
    profile must deny them too.
 
-3. **Let Codex's commands see the SSH agent.** Codex builds a fresh
-   environment for every command it runs from `[shell_environment_policy]`
-   in `~/.codex/config.toml`. If that drops `SSH_AUTH_SOCK`, the agent's
-   `git push` has no agent socket, and ssh falls back to reading the private
-   key file, which the sandbox refuses (`Load key ...: Operation not
-   permitted`). `inherit = "core"` always drops it, since the core set does not
-   include it, even when `include_only` lists it. With a restrictive policy,
-   use:
+3. **Let Codex's commands see the SSH agent and the sandbox.** Codex builds a
+   fresh environment for every command it runs from
+   `[shell_environment_policy]` in `~/.codex/config.toml`. Two variables must
+   survive it:
+   - `SSH_AUTH_SOCK`: without it, `git push` has no agent socket, and ssh falls
+     back to reading the private key file, which the sandbox refuses
+     (`Load key ...: Operation not permitted`).
+   - `NONO_CAP_FILE`: without it, `nono why --self` reports `NOT SANDBOXED`,
+     so the agent cannot tell a sandbox denial from any other error.
+
+   `inherit = "core"` always drops both, since the core set includes neither,
+   even when `include_only` lists them. With a restrictive policy, use:
 
    ```toml
    [shell_environment_policy]
    inherit = "all"
-   include_only = ["PATH", "HOME", "SSH_AUTH_SOCK"]  # plus whatever else you allow
+   include_only = ["PATH", "HOME", "SSH_AUTH_SOCK", "NONO_CAP_FILE"]  # plus whatever else you allow
    ```
 
    `supatree doctor` checks this whenever a codex model is configured.
