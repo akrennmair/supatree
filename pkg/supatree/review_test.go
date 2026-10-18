@@ -1,6 +1,7 @@
 package supatree
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -306,5 +307,221 @@ func TestReviewTreeReachesReviewedWithBystanders(t *testing.T) {
 	}
 	if !tree.Reap() {
 		t.Error("a finished review tree should be reapable")
+	}
+}
+
+// repoOA and repoOB are the GitHub repos the review fixtures map members a and b to.
+const (
+	repoOA = "o/a"
+	repoOB = "o/b"
+)
+
+// reviewStackFixture is a stack with an origin — trees are built from origin's
+// default branch, which is what lets the local checkout run ahead of it — and
+// member repos that resolve to o/<alias> on GitHub, each with a PR #1 head.
+func reviewStackFixture(t *testing.T) (c *Config, a, b string) {
+	t.Helper()
+	c, a, b = stackFixture(t)
+	repos := map[string]string{a: repoOA, b: repoOB}
+	orig := resolveRemote
+	t.Cleanup(func() { resolveRemote = orig })
+	resolveRemote = func(raw string) (github.RemoteRef, bool) {
+		if repo, ok := repos[raw]; ok {
+			return github.ParseRemote("git@github.com:" + repo + ".git")
+		}
+		return orig(raw)
+	}
+	for _, r := range []string{a, b} {
+		run(t, r, "update-ref", "refs/pull/1/head", "HEAD")
+	}
+	stack := c.FindStack("s").Path
+	origin := filepath.Join(t.TempDir(), "stack.git")
+	run(t, stack, "clone", "-q", "--bare", stack, origin)
+	run(t, stack, "remote", "add", "origin", origin)
+	run(t, stack, "fetch", "-q", "origin")
+	return c, a, b
+}
+
+func TestNewReviewChecksOutThePR(t *testing.T) {
+	c, _, _ := reviewStackFixture(t)
+	inst, _, err := NewReview(c, ReviewOptions{Stack: "s", Name: "rev",
+		PRs: []ReviewRef{{Repo: repoOA, Number: 1, URL: "https://github.com/o/a/pull/1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := inst.FindMember("a"); m == nil || !m.Exists || m.Review == nil || m.Review.Number != 1 {
+		t.Fatalf("member a = %+v, want it checked out at o/a#1", m)
+	}
+}
+
+// #17: a member committed to the stack's checkout but never pushed — what
+// `stack add` did before it published — is missing from origin, which a review
+// tree is built from. That must be refused, saying why, not create a tree with
+// nothing to review.
+func TestNewReviewRefusesAMemberThatWasNeverPushed(t *testing.T) {
+	c, _, b := reviewStackFixture(t)
+	stack := c.FindStack("s").Path
+	spec, err := LoadSpec(stack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.Members["b"] = b
+	if err := SaveSpec(stack, spec); err != nil {
+		t.Fatal(err)
+	}
+	run(t, stack, "commit", "-q", "-am", "supatree: add b (local only)")
+	_, _, err = NewReview(c, ReviewOptions{Stack: "s", Name: "rev",
+		PRs: []ReviewRef{{Repo: repoOB, Number: 1, URL: "https://github.com/o/b/pull/1"}}})
+	if err == nil {
+		t.Fatal("a review of a repo missing from origin's spec was accepted")
+	}
+	if !strings.Contains(err.Error(), "local checkout") || !strings.Contains(err.Error(), "push the stack") {
+		t.Errorf("err = %v, want it to name the unpushed stack edit", err)
+	}
+	if insts, _ := List(c); len(insts) != 0 {
+		t.Errorf("a refused review left %d tree(s) behind", len(insts))
+	}
+
+	// Once pushed, the same review works.
+	run(t, c.FindStack("s").Path, "push", "-q", "origin", "HEAD:main")
+	inst, _, err := NewReview(c, ReviewOptions{Stack: "s", Name: "rev",
+		PRs: []ReviewRef{{Repo: repoOB, Number: 1, URL: "https://github.com/o/b/pull/1"}}})
+	if err != nil {
+		t.Fatalf("after pushing: %v", err)
+	}
+	if m := inst.FindMember("b"); m == nil || m.Review == nil {
+		t.Errorf("member b = %+v, want it under review", m)
+	}
+}
+
+// #12: a PR added to an existing review tree moves the idle member onto its
+// head, keeps what was there, refuses over work, and tells the agent.
+// addReviewFixture is a review tree for o/a#1 in a stack that also has b,
+// whose PR #1 head is a commit b's default branch does not have.
+func addReviewFixture(t *testing.T) (c *Config, inst *Instance, prHead string) {
+	t.Helper()
+	c, _, b := reviewStackFixture(t)
+	stack := c.FindStack("s").Path
+	spec, _ := LoadSpec(stack)
+	spec.Members["b"] = b
+	if err := SaveSpec(stack, spec); err != nil {
+		t.Fatal(err)
+	}
+	run(t, stack, "commit", "-q", "-am", "add b")
+	run(t, stack, "push", "-q", "origin", "HEAD:main")
+	// A commit on b's PR head that its default branch does not have, so the
+	// move is visible.
+	run(t, b, "commit", "-q", "--allow-empty", "-m", "pr work")
+	run(t, b, "update-ref", "refs/pull/1/head", "HEAD")
+	run(t, b, "reset", "-q", "--hard", "HEAD~1")
+	prHead, _ = gitOutput(b, "rev-parse", "refs/pull/1/head")
+
+	var err error
+	inst, _, err = NewReview(c, ReviewOptions{Stack: "s", Name: "rev",
+		PRs: []ReviewRef{{Repo: repoOA, Number: 1, URL: "https://github.com/o/a/pull/1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c, inst, prHead
+}
+
+func TestAddReview(t *testing.T) {
+	c, inst, prHead := addReviewFixture(t)
+	writeFile(t, filepath.Join(StateDir(inst.Root), "review.md"), "notes so far\n")
+	memberB := MemberPath(inst.Root, "b")
+
+	// Uncommitted work on the bystander: reported, not reset.
+	writeFile(t, filepath.Join(memberB, "scratch.txt"), "mine\n")
+	run(t, memberB, "add", "scratch.txt")
+	prB := ReviewRef{Repo: repoOB, Number: 1, URL: "https://github.com/o/b/pull/1"}
+	res, err := AddReview(c, "rev", []ReviewRef{prB}, PMAgentName, false)
+	if err != nil || len(res) != 1 || !strings.Contains(res[0].Skipped, "uncommitted") {
+		t.Fatalf("add over uncommitted work: %+v, %v", res, err)
+	}
+	run(t, memberB, "reset", "-q", "--hard")
+
+	res, err = AddReview(c, "rev", []ReviewRef{
+		prB,
+		{Repo: repoOA, Number: 1, URL: "https://github.com/o/a/pull/1"},
+		{Repo: repoOA, Number: 2, URL: "https://github.com/o/a/pull/2"},
+		{Repo: "o/nope", Number: 3, URL: "https://github.com/o/nope/pull/3"},
+	}, PMAgentName, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res[0].Skipped != "" || res[0].Alias != "b" || res[0].Head != prHead {
+		t.Errorf("o/b#1: %+v, want it added at %s", res[0], prHead)
+	}
+	for i, want := range []string{"already in this tree", "one pull request per repo", "no member of this stack"} {
+		if !strings.Contains(res[i+1].Skipped, want) {
+			t.Errorf("result %d = %+v, want skipped: %s", i+1, res[i+1], want)
+		}
+	}
+	if head, _ := gitOutput(memberB, "rev-parse", "HEAD"); head != prHead {
+		t.Errorf("member b is at %s, want the PR head %s", head, prHead)
+	}
+	after, _ := LoadInstance(inst.Root)
+	if m := after.FindMember("b"); m == nil || m.Review == nil || m.Review.Number != 1 {
+		t.Errorf("b is not recorded as under review: %+v", m)
+	}
+	if body, _ := os.ReadFile(filepath.Join(StateDir(inst.Root), "review.md")); string(body) != "notes so far\n" {
+		t.Errorf("review.md = %q, want it kept", body)
+	}
+	msgs, _ := Mail(inst.Root, MainAgent)
+	if len(msgs) == 0 || !strings.Contains(msgs[len(msgs)-1].Text, "https://github.com/o/b/pull/1") {
+		t.Errorf("the agent was not told about the added PR: %+v", msgs)
+	}
+}
+
+// A review tree's PR that appears is one added for review, not opened.
+func TestAddedReviewPREventText(t *testing.T) {
+	prev := MemberStatus{Alias: "b", State: MemberIdle}
+	cur := MemberStatus{Alias: "b", State: MemberOpen, PR: &github.PRInfo{Number: 7, Status: github.PROpen}}
+	evs := memberEvents("rev", prev, cur, time.Now(), ModeReviewing)
+	if len(evs) != 1 || !strings.Contains(evs[0].Text, "added for review") {
+		t.Errorf("events = %+v", evs)
+	}
+}
+
+// The watcher acts on repos/<alias> only when it is the worktree supatree
+// made: an agent swapping it for a link to elsewhere gets it left alone.
+func TestAddReviewRefusesARedirectedMember(t *testing.T) {
+	c, inst, _ := addReviewFixture(t)
+	member := MemberPath(inst.Root, "b")
+	elsewhere := t.TempDir()
+	if err := os.RemoveAll(member); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, member); err != nil {
+		t.Fatal(err)
+	}
+	res, err := AddReview(c, "rev", []ReviewRef{{Repo: repoOB, Number: 1, URL: "https://github.com/o/b/pull/1"}}, PMAgentName, false)
+	if err != nil || len(res) != 1 || !strings.Contains(res[0].Skipped, "not this tree's worktree") {
+		t.Errorf("add through a symlinked member: %+v, %v", res, err)
+	}
+}
+
+// The clone is shared by every tree: repos/ linked into another tree must not
+// get that tree's worktree removed.
+func TestAddReviewRefusesAnotherTreesWorktree(t *testing.T) {
+	c, inst, _ := addReviewFixture(t)
+	other, _, err := NewReview(c, ReviewOptions{Stack: "s", Name: "other",
+		PRs: []ReviewRef{{Repo: repoOA, Number: 1, URL: "https://github.com/o/a/pull/1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repos := filepath.Join(inst.Root, ReposDirName)
+	if err := os.RemoveAll(repos); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(other.Root, ReposDirName), repos); err != nil {
+		t.Fatal(err)
+	}
+	res, err := AddReview(c, "rev", []ReviewRef{{Repo: repoOB, Number: 1, URL: "https://github.com/o/b/pull/1"}}, PMAgentName, false)
+	if err != nil || len(res) != 1 || res[0].Skipped == "" {
+		t.Fatalf("add through a repos/ linked into another tree: %+v, %v; want it refused", res, err)
+	}
+	if _, err := os.Stat(filepath.Join(other.Root, ReposDirName, "b", ".git")); err != nil {
+		t.Error("the other tree's worktree was removed")
 	}
 }

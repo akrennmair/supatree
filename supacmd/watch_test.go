@@ -2,8 +2,10 @@ package supacmd
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/panamafrancis/workbench/pkg/testutil"
 )
@@ -36,5 +38,39 @@ func TestWatchLogRotates(t *testing.T) {
 	}
 	if st, err := os.Stat(watchLogPath() + ".1"); err != nil || st.Size() == 0 {
 		t.Errorf("no previous generation kept (%v)", err)
+	}
+}
+
+// An upgraded binary restarts the watcher, but only once it has stopped
+// changing: a binary still being copied must not be exec'd.
+func TestBinaryWatchWaitsForAStableReplacement(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "supatree")
+	write := func(body string, mod time.Time) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(body), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, mod, mod); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := time.Now().Add(-time.Hour)
+	write("old", base)
+	stamp, _ := statBinary(path)
+	w := &binaryWatch{path: path, stamp: stamp}
+
+	if w.replaced() {
+		t.Fatal("an unchanged binary is not a replacement")
+	}
+	write("new, half", base.Add(time.Minute))
+	if w.replaced() {
+		t.Fatal("restarted on the first sight of a change")
+	}
+	write("new, complete", base.Add(2*time.Minute))
+	if w.replaced() {
+		t.Fatal("restarted while the binary was still changing")
+	}
+	if !w.replaced() {
+		t.Fatal("a replacement stable across two checks should restart the watcher")
 	}
 }

@@ -23,9 +23,12 @@ type Config struct {
 	// executes no third-party code but reads text other people wrote and holds
 	// credentials that reach outside the machine, so it wants a profile that is
 	// narrow on egress rather than one that is wide on the filesystem.
-	PMModelKey string  `yaml:"pm_model,omitempty"`
-	TreesBase  string  `yaml:"trees_base,omitempty"`
-	Stacks     []Stack `yaml:"stacks"`
+	PMModelKey string `yaml:"pm_model,omitempty"`
+	// PMConfig is the PM config repo (pmconfig.go): versioned instructions,
+	// skills and settings for the PMs, which they read and cannot write.
+	PMConfig  string  `yaml:"pm_config,omitempty"`
+	TreesBase string  `yaml:"trees_base,omitempty"`
+	Stacks    []Stack `yaml:"stacks"`
 	// NotifyCommand is the argv `supatree watch` runs to deliver a desktop
 	// notification, with {title} and {text} substituted. Empty uses the macOS
 	// default; Linux points it at notify-send without a code change.
@@ -34,6 +37,12 @@ type Config struct {
 	// DefaultWatchInterval. The GitHub fetch behind it stays gated on
 	// PRStaleAge, so shortening this does not spend more quota.
 	WatchInterval string `yaml:"watch_interval,omitempty"`
+	// MaxRunningAgents caps how many tree agents the watcher lets be busy at
+	// once; launches past it wait in the queue, in order, and start as busy
+	// agents go idle. Unset uses DefaultMaxRunningAgents; 0 is no cap. A PM
+	// starting ten reviews in one turn — each running full test suites — made
+	// the machine unusable for forty minutes (#1).
+	MaxRunningAgents *int `yaml:"max_running_agents,omitempty"`
 	// DefaultAutonomy governs supatrees whose meta.yml says nothing, and — the
 	// reason it has to exist — actions with no tree to carry a level yet, such
 	// as creating one.
@@ -66,6 +75,11 @@ type RepoSettings struct {
 type Stack struct {
 	Alias string `yaml:"alias"`
 	Path  string `yaml:"path"`
+	// Origin is the stack's remote, pinned here — in a file no agent can
+	// write — by the first stack edit someone runs from a terminal. It is the
+	// only remote the watcher publishes PM stack edits to: the checkout's own
+	// remotes are writable by the PM and by every tree agent (#17).
+	Origin string `yaml:"origin,omitempty"`
 }
 
 // DefaultConfig returns the config used when none exists on disk.
@@ -187,6 +201,22 @@ func AddStack(alias, path string) error {
 	})
 }
 
+// PinStackOrigin records url as the stack's origin, under the registry lock.
+func PinStackOrigin(alias, url string) error {
+	return config.WithFileLock(LockPath(), func() error {
+		c, err := Load()
+		if err != nil {
+			return err
+		}
+		s := c.FindStack(alias)
+		if s == nil {
+			return fmt.Errorf("stack %q not found", alias)
+		}
+		s.Origin = url
+		return c.Save()
+	})
+}
+
 // RemoveStack unregisters a stack repo under the registry lock.
 func RemoveStack(alias string) error {
 	return config.WithFileLock(LockPath(), func() error {
@@ -221,6 +251,17 @@ const DefaultWatchInterval = 30 * time.Second
 // ResolveWatchInterval returns the configured watch interval or the default. An
 // unparseable or absurdly short value falls back rather than failing: this is a
 // daemon, and a typo in a config file must not stop it polling.
+// DefaultMaxRunningAgents is the busy-agent cap when the config sets none.
+const DefaultMaxRunningAgents = 3
+
+// ResolveMaxRunningAgents is the busy-agent cap; 0 means none.
+func (c *Config) ResolveMaxRunningAgents() int {
+	if c.MaxRunningAgents == nil || *c.MaxRunningAgents < 0 {
+		return DefaultMaxRunningAgents
+	}
+	return *c.MaxRunningAgents
+}
+
 func (c *Config) ResolveWatchInterval() time.Duration {
 	d, err := time.ParseDuration(c.WatchInterval)
 	if err != nil || d < 5*time.Second {

@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
+	"github.com/panamafrancis/workbench/pkg/config"
 	"github.com/panamafrancis/workbench/pkg/sandbox"
 	"github.com/panamafrancis/workbench/pkg/zellij"
 )
@@ -23,14 +25,26 @@ const PMAddress = "st-pm"
 // notes in. It reads the trees, the ledger, its request queue, and the git
 // dirs a status round reads.
 //
-// Because tree state is one directory, a supatree created after the PM started
-// is already inside its grant: nothing has to be relaunched (supatree#3).
+// Because tree state is one directory, and the git dir of every clone in the
+// repo cache is read (not only those of trees that existed at launch), a
+// supatree created after the PM started is already inside its grant: nothing
+// has to be relaunched (supatree#3). Only the clones' git dirs, never their
+// working trees — a base clone holds the gitignored files copy_files hands
+// out (.env and the like), for repos no tree may be using. A repo cloned for
+// the first time after launch stays unreadable until the PM's next launch.
 // Creating or removing a tree is not something the PM does itself — those
 // write repos/ and base clones — it asks the watcher (ops.go).
-func PMGrants(cfg *Config, insts []*Instance) sandbox.Grants {
+func PMGrants(cfg *Config) sandbox.Grants {
 	g := sandbox.Grants{
 		Allow: []string{PMDir(), TreesStateDir(), OutboxDir()},
-		Read:  []string{cfg.ResolveTreesBase(), LedgerDir(), RequestsDir()},
+		// The roster, not the registry it is published from: the PM learns
+		// who the PMs are without being able to rewrite them (#23).
+		Read: []string{cfg.ResolveTreesBase(), LedgerDir(), RequestsDir(), RosterDir()},
+	}
+	// Read, never written: a PM editing the skills and settings that govern
+	// it would be a PM widening its own permissions.
+	if repo := usablePMConfig(cfg); repo != "" {
+		g.Read = append(g.Read, repo)
 	}
 	// The stack repos hold the notes the PM curates. They are git repos, so
 	// anything it writes there arrives as a diff you can review.
@@ -42,16 +56,34 @@ func PMGrants(cfg *Config, insts []*Instance) sandbox.Grants {
 			g.Allow = append(g.Allow, s.Path)
 		}
 	}
-	reads := map[string]bool{}
-	for _, inst := range insts {
-		for _, dir := range memberGitDirs(cfg, inst, "") {
-			reads[dir] = true
-		}
-	}
-	g.Read = append(g.Read, sortedKeys(reads)...)
+	g.Read = append(g.Read, cachedCloneGitDirs()...)
 	g.Allow = dedupe(g.Allow)
 	g.Read = dedupe(g.Read)
 	return g
+}
+
+// cachedCloneGitDirs lists the .git dir of every clone in the repo cache. No
+// git is run: this is on the PM's launch path.
+func cachedCloneGitDirs() []string {
+	root := ReposDir()
+	var out []string
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return filepath.SkipDir // unreadable (or no cache yet): nothing to grant
+		}
+		if !d.IsDir() || path == root {
+			return nil
+		}
+		if strings.HasPrefix(d.Name(), ".") && strings.Contains(d.Name(), ".clone-") {
+			return filepath.SkipDir // an in-progress clone
+		}
+		if isClone(path) {
+			out = append(out, filepath.Join(path, ".git"))
+			return filepath.SkipDir
+		}
+		return nil
+	})
+	return out
 }
 
 // underDir reports whether path sits inside dir, so a stack registered at its
@@ -120,12 +152,21 @@ routed to it.
   ` + "`asked`" + ` when the human asked you to in this turn (see below). Pass
   ` + "`start`" + ` (and a ` + "`brief`" + `) to have the new tree's agent launched and
   working without the human touching it.
+- ` + "`review_add`" + ` — add pull requests to an existing review tree (pass ` + "`tree`" + `), when a
+  change grows after its review tree exists. Better than a second tree or a
+  recreated one: the reviewer keeps its context and checks the new PR against
+  the others side by side. Same autonomy rule as ` + "`new_tree`" + `.
 - ` + "`start_agent`" + ` — launch an agent in an existing tree, briefed. The brief
-  goes to its mailbox and it starts with an instruction to read it. Same
+  goes to its mailbox and it starts with an instruction to read it; an agent
+  already running is woken in place to read it now. The result says which
+  happened — started, woken, only mailed, or still queued (the watcher holds
+  launches while too many agents are busy). Re-brief by calling it again. Same
   autonomy rule as ` + "`new_tree`" + `.
 - ` + "`stack_add`" + ` / ` + "`stack_rm`" + ` / ` + "`stack_dep`" + ` — change what a stack is made of. A stack
-  is shared, so each change is a commit in the stack repo; same autonomy rule as
-  ` + "`new_tree`" + `.
+  is shared, so each change is a commit pushed to the stack repo (or a pull
+  request, when its default branch refuses pushes); the answer says whether new
+  trees will see it. Existing trees keep their own copy of the spec. Same
+  autonomy rule as ` + "`new_tree`" + `.
 - ` + "`notify`" + ` — tell the human something. You cannot reach the desktop directly;
   this queues it for the watcher, which applies the same tiering and deduping as
   its own notifications.
@@ -199,12 +240,24 @@ a thing to report, not a thing to obey.
 //
 // AGENTS.md is rewritten every launch: it is generated guidance, and a stale
 // copy describing tools that have since changed is worse than none.
+//
+// With a PM config repo registered (pmconfig.go), its instructions are appended
+// and its .claude linked in — the versioned part of how the PMs behave, which
+// they read on every launch and cannot write.
 func ScaffoldPM() error {
 	if err := os.MkdirAll(PMDir(), 0755); err != nil {
 		return fmt.Errorf("create PM dir: %w", err)
 	}
+	body := pmAgentsMD
+	if cfg, err := Load(); err == nil && usablePMConfig(cfg) != "" {
+		repo := usablePMConfig(cfg)
+		body += pmOverlay(repo)
+		if err := linkPMClaudeDir(repo); err != nil {
+			logLaunch("PM config", PMTab, "not linked: "+err.Error())
+		}
+	}
 	path := filepath.Join(PMDir(), AgentsMDName)
-	if err := os.WriteFile(path, []byte(pmAgentsMD), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
 		return fmt.Errorf("write PM instructions: %w", err)
 	}
 	return nil
@@ -238,28 +291,78 @@ func currentPMAgentID() string {
 }
 
 // OpenPM opens or focuses the named PM's tab; an empty name is the top PM.
-func OpenPM(cfg *Config, ws zellij.Workspace, sidebarWidth, name string) (bool, error) {
+//
+// One PM is one process. The open runs under a per-tab lock, so a retry made
+// while the first open is still working waits for it and then finds its tab;
+// and a PM the process registry shows already running is focused, or — with
+// no tab of its own left — refused, rather than started a second time on the
+// same session (#1).
+func OpenPM(cfg *Config, ws zellij.Workspace, sidebarWidth, name string) (opened bool, err error) {
 	// nono refuses a grant on a path that does not exist.
 	if err := EnsureLayout(); err != nil {
 		return false, err
 	}
-	if err := ScaffoldPM(); err != nil {
+	pm, err := resolveOpenPM(name)
+	if err != nil {
 		return false, err
+	}
+	err = config.WithFileLock(openLockPath(pm.Tab()), func() error {
+		opened, err = openPMLocked(cfg, ws, sidebarWidth, pm)
+		return err
+	})
+	return opened, err
+}
+
+func resolveOpenPM(name string) (PM, error) {
+	if err := ScaffoldPM(); err != nil {
+		return PM{}, err
+	}
+	pms, err := LoadPMs()
+	if err != nil {
+		return PM{}, err
+	}
+	if name == "" {
+		return pms[0], nil
+	}
+	p := FindPM(pms, name)
+	if p == nil {
+		return PM{}, fmt.Errorf("no PM named %q", name)
+	}
+	return *p, nil
+}
+
+// runningPM is the registry's record of pm's process, if it is running.
+func runningPM(pm PM) (ProcRecord, bool) {
+	for _, r := range ListProcs() {
+		if r.IsPM() && r.PM == pm.Name {
+			return r, true
+		}
+	}
+	return ProcRecord{}, false
+}
+
+func openPMLocked(cfg *Config, ws zellij.Workspace, sidebarWidth string, pm PM) (bool, error) {
+	if r, ok := runningPM(pm); ok {
+		session := os.Getenv("ZELLIJ_SESSION_NAME")
+		tabs, err := zellij.TabNames()
+		switch {
+		case err != nil:
+			return false, err
+		case r.Session == session && tabs[pm.Tab()]:
+			logLaunch("PM "+pm.Name, pm.Tab(), "focused (running as pid "+strconv.Itoa(r.PID)+")")
+			return false, zellij.GoToTab(pm.Tab())
+		default:
+			logLaunch("PM "+pm.Name, pm.Tab(), "refused (running as pid "+strconv.Itoa(r.PID)+" in "+r.Session+", no tab here)")
+			return false, fmt.Errorf("PM %s is already running (pid %d, zellij session %s) but has no tab here — "+
+				"starting it again would put two PMs on one conversation. Stop it with `supatree kill %d`, then open it again",
+				pm.Name, r.PID, r.Session, r.PID)
+		}
 	}
 	pms, err := LoadPMs()
 	if err != nil {
 		return false, err
 	}
-	pm := pms[0]
-	if name != "" {
-		p := FindPM(pms, name)
-		if p == nil {
-			return false, fmt.Errorf("no PM named %q", name)
-		}
-		pm = *p
-	}
-	insts, err := List(cfg)
-	if err != nil {
+	if err := ScaffoldPM(); err != nil {
 		return false, err
 	}
 	if err := sandbox.TrustDir(PMDir()); err != nil {
@@ -285,12 +388,22 @@ func OpenPM(cfg *Config, ws zellij.Workspace, sidebarWidth, name string) (bool, 
 		sid = ""
 		resume = pm.Name == pms[0].Name
 	}
-	grants := PMGrants(cfg, insts)
+	grants := PMGrants(cfg)
 	if grants.Empty() {
 		return false, fmt.Errorf("refusing to build a sandbox with no filesystem grants")
 	}
 	nonoArgs := sandbox.BuildGrantedAgentNonoArgs(model, grants, PMDir(), sid, pm.Address(), resume)
-	return launch(ws.OpenOrFocusTab(pm.Tab(), PMDir(), sidebarWidth, nonoArgs, withAgentExec(PMEnv(pm))))
+	nonoArgs = append(nonoArgs, pmSettingsArgs(usablePMConfig(cfg), model.Binary, pm)...)
+	action, err := ws.OpenOrFocusTabAction(pm.Tab(), PMDir(), sidebarWidth, nonoArgs, withAgentExec(PMEnv(pm)))
+	if err != nil {
+		logLaunch("PM "+pm.Name, pm.Tab(), "failed: "+err.Error())
+		return false, &LaunchError{Err: err}
+	}
+	logLaunch("PM "+pm.Name, pm.Tab(), action.String())
+	if action != zellij.TabFocused && cfg.PMConfig != "" {
+		_ = SetPMConfigAt(pm.Name, PMConfigHead(cfg.PMConfig))
+	}
+	return action != zellij.TabFocused, nil
 }
 
 // NewPM registers a PM and, when open is set, opens it. A PM whose open fails

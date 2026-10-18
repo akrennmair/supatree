@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -63,6 +64,7 @@ var watchCmd = &cobra.Command{
 func runWatch(ctx context.Context) error {
 	if watchOnce {
 		runOps()
+		forwardPMMail()
 		return watchRound(ctx)
 	}
 
@@ -80,6 +82,7 @@ func runWatch(ctx context.Context) error {
 	// agent appear, and checking is one stat of a file, not a GitHub round.
 	launchTicker := time.NewTicker(launchPollInterval)
 	defer launchTicker.Stop()
+	self := newBinaryWatch()
 
 	if err := watchRound(ctx); err != nil {
 		logWatch("round failed: %v", err)
@@ -89,6 +92,7 @@ func runWatch(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-launchTicker.C:
+			forwardPMMail()
 			runLaunches(ctx)
 		case <-ticker.C:
 			// The daemon is spawned by `supatree start` and outlives its parent
@@ -98,6 +102,9 @@ func runWatch(ctx context.Context) error {
 			if !watchSessionsAlive() {
 				logWatch("no supatree sessions left — exiting")
 				return nil
+			}
+			if self.replaced() {
+				restartWatcher(self.path)
 			}
 			if err := watchRound(ctx); err != nil {
 				logWatch("round failed: %v", err)
@@ -149,11 +156,103 @@ func watchRound(ctx context.Context) error {
 
 	deliver(ctx, cfg, evs, cur.At)
 	runSchedule(cur.At)
+	runLaunches(ctx)
+	if known, err := supatree.KnownTreeNames(cfg); err == nil {
+		for _, line := range supatree.SweepRemoved(supatreeWorkspace(), known) {
+			logWatch("sweep: %s", line)
+		}
+	}
+	return nil
+}
+
+// forwardPMMail moves tree agents' messages for a PM into the request queue.
+// It runs on the fast launch tick, not in watchRound: a round is a GitHub fetch
+// that can take seconds and returns early on a ledger error, and a reply that
+// waits on either is a reply the PM reports as never sent.
+func forwardPMMail() {
+	cfg, err := supatree.Load()
+	if err != nil {
+		logWatch("forward PM mail: load config: %v", err)
+		return
+	}
+	insts, err := supatree.List(cfg)
+	if err != nil {
+		logWatch("forward PM mail: %v", err)
+		return
+	}
 	if _, err := supatree.ForwardPMMail(insts); err != nil {
 		logWatch("forward PM mail: %v", err)
 	}
-	runLaunches(ctx)
-	return nil
+}
+
+// binaryWatch notices the watcher's own executable being replaced on disk.
+//
+// The daemon outlives every upgrade: it exits only when no session is left, and
+// a newly spawned watcher loses the election to it quietly. Without this an
+// upgraded supatree keeps running the old watcher for days, launching agents
+// through the new binary (runLaunches re-execs it) while forwarding mail and
+// running ops with the old code.
+type binaryWatch struct {
+	path    string
+	stamp   binaryStamp
+	pending binaryStamp // a changed stamp seen once, not yet trusted
+}
+
+type binaryStamp struct {
+	mod  time.Time
+	size int64
+}
+
+func statBinary(path string) (binaryStamp, bool) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return binaryStamp{}, false
+	}
+	return binaryStamp{mod: fi.ModTime(), size: fi.Size()}, true
+}
+
+func newBinaryWatch() *binaryWatch {
+	path, err := os.Executable()
+	if err != nil {
+		return &binaryWatch{}
+	}
+	stamp, _ := statBinary(path)
+	return &binaryWatch{path: path, stamp: stamp}
+}
+
+// replaced reports a new binary at the watcher's path once it has been seen
+// unchanged on two consecutive checks — a binary still being written must not
+// be exec'd half-copied.
+func (w *binaryWatch) replaced() bool {
+	if w.path == "" {
+		return false
+	}
+	cur, ok := statBinary(w.path)
+	if !ok || cur == w.stamp {
+		w.pending = binaryStamp{}
+		return false
+	}
+	if cur != w.pending {
+		w.pending = cur
+		return false
+	}
+	return true
+}
+
+// opsMu is held while an op runs, so a restart never cuts a tree create or
+// removal in half.
+var opsMu sync.Mutex
+
+// restartWatcher replaces this process with the binary at path, keeping its
+// arguments. The singleton lock goes with the old image (Go opens every file
+// close-on-exec), so the new one wins the election straight away. On failure
+// the old watcher carries on.
+func restartWatcher(path string) {
+	logWatch("watcher binary %s changed on disk — restarting", path)
+	opsMu.Lock()
+	err := syscall.Exec(path, os.Args, os.Environ())
+	opsMu.Unlock()
+	logWatch("restart failed, carrying on: %v", err)
 }
 
 // launchPollInterval is how often the watcher checks the launch queue.
@@ -194,6 +293,8 @@ func runOpsLoop(ctx context.Context) {
 // runOps claims and answers every waiting request, one at a time: two creates
 // at once would race for the same generated name.
 func runOps() {
+	opsMu.Lock()
+	defer opsMu.Unlock()
 	cfg, err := supatree.Load()
 	if err != nil {
 		logWatch("ops: load config: %v", err)
@@ -217,41 +318,137 @@ func runLaunches(ctx context.Context) {
 	if _, err := os.Stat(supatree.LaunchPath()); err != nil {
 		return
 	}
-	reqs, err := supatree.DrainLaunches()
-	if err != nil {
-		logWatch("drain launches: %v", err)
-		return
-	}
 	exe, err := os.Executable()
 	if err != nil {
 		logWatch("launch: %v", err)
 		return
 	}
-	for _, r := range reqs {
-		session := r.Session
-		if session == "" {
-			session = watchSession
-		}
-		if session == "" {
-			logWatch("launch %s:%s: no zellij session to open it in (start the watcher with --session)", r.Tree, r.Agent)
-			continue
-		}
-		// An unreadable session list is not proof the session is gone, so only
-		// a definite "not running" skips the launch.
-		if alive, err := zellij.SessionAlive(session); err == nil && !alive {
-			logWatch("launch %s:%s: zellij session %s is not running — open the agent from the sidebar instead", r.Tree, r.Agent, session)
-			continue
-		}
-		lctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-		cmd := exec.CommandContext(lctx, exe, "open", r.Tree, "--agent", r.Agent, "--session", session, "--background")
-		out, err := cmd.CombinedOutput()
-		cancel()
-		if err != nil {
-			logWatch("launch %s:%s: %v: %s", r.Tree, r.Agent, err, strings.TrimSpace(string(out)))
-			continue
-		}
-		logWatch("launched %s:%s in %s", r.Tree, r.Agent, session)
+	cfg, err := supatree.Load()
+	if err != nil {
+		logWatch("launch: load config: %v", err)
+		return
 	}
+	insts, _ := supatree.List(cfg)
+	gate := newLaunchGate(cfg, insts, time.Now())
+	reqs, err := supatree.TakeLaunches(gate.Admit)
+	if err != nil {
+		logWatch("take launches: %v", err)
+		return
+	}
+	if n := supatree.QueuedLaunches(); n > 0 && n != lastDeferred {
+		logWatch("holding %d launch(es): %d/%d agents busy", n, gate.Busy, gate.Max)
+	}
+	lastDeferred = supatree.QueuedLaunches()
+
+	// A second request for one agent rides on the first's launch, and gets
+	// the same answer.
+	answered := map[string]supatree.LaunchResult{}
+	for _, r := range reqs {
+		key := supatree.TabName(r.Tree, r.Agent)
+		res, done := answered[key]
+		if !done {
+			res = launchOne(ctx, exe, r)
+			answered[key] = res
+			if res.Outcome == supatree.LaunchStarted {
+				recentLaunches[key] = time.Now()
+			}
+		}
+		res.ID = r.ID
+		if err := supatree.WriteLaunchResult(res); err != nil {
+			logWatch("launch %s: answer: %v", key, err)
+		}
+	}
+}
+
+// lastDeferred is the queue length last logged, so a held launch is logged
+// when the hold changes rather than every two seconds.
+var lastDeferred int
+
+// recentLaunches remembers what this watcher started, and when. A new agent
+// has no transcript for its first seconds, so without this the next tick
+// would count it idle and admit another launch in its place.
+var recentLaunches = map[string]time.Time{}
+
+// newLaunchGate counts the busy agents across every tree: a live tab whose
+// transcript has grown within BusyWindow, or one this watcher started within
+// it.
+func newLaunchGate(cfg *supatree.Config, insts []*supatree.Instance, now time.Time) *supatree.LaunchGate {
+	for k, at := range recentLaunches {
+		if now.Sub(at) >= supatree.BusyWindow {
+			delete(recentLaunches, k)
+		}
+	}
+	live := liveAgentTabs()
+	gate := &supatree.LaunchGate{Max: cfg.ResolveMaxRunningAgents(), Live: func(tab string) bool { return live[tab] }}
+	for _, inst := range insts {
+		agents, err := supatree.LoadAgents(inst.Root)
+		if err != nil {
+			continue
+		}
+		for _, a := range agents {
+			tab := supatree.TabName(inst.Name, a.Name)
+			_, recent := recentLaunches[tab]
+			if live[tab] && (recent || supatree.AgentBusy(inst.Root, a, now)) {
+				gate.Busy++
+			}
+		}
+	}
+	return gate
+}
+
+// liveAgentTabs is the set of tabs, in the watcher's session, whose agent is
+// running. Unreadable is empty: the cap then counts nobody busy and lets
+// launches through, as the watcher did before it had a cap.
+func liveAgentTabs() map[string]bool {
+	live := map[string]bool{}
+	panes, err := zellij.ListPanes(watchSession)
+	if err != nil {
+		return live
+	}
+	for _, p := range panes {
+		if zellij.LivenessIn(panes, p.TabName) == zellij.LivenessAlive {
+			live[p.TabName] = true
+		}
+	}
+	return live
+}
+
+// launchOne runs one launch as a child `supatree open --background` and reads
+// back what it came to.
+func launchOne(ctx context.Context, exe string, r supatree.LaunchRequest) supatree.LaunchResult {
+	res := supatree.LaunchResult{Tree: r.Tree, Agent: r.Agent, Outcome: supatree.LaunchFailed}
+	session := r.Session
+	if session == "" {
+		session = watchSession
+	}
+	if session == "" {
+		res.Detail = "no zellij session to open it in (start the watcher with --session)"
+		logWatch("launch %s:%s: %s", r.Tree, r.Agent, res.Detail)
+		return res
+	}
+	// An unreadable session list is not proof the session is gone, so only
+	// a definite "not running" skips the launch.
+	if alive, err := zellij.SessionAlive(session); err == nil && !alive {
+		res.Detail = fmt.Sprintf("zellij session %s is not running — open the agent from the sidebar instead", session)
+		logWatch("launch %s:%s: %s", r.Tree, r.Agent, res.Detail)
+		return res
+	}
+	lctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	cmd := exec.CommandContext(lctx, exe, "open", r.Tree, "--agent", r.Agent, "--session", session, "--background")
+	out, err := cmd.CombinedOutput()
+	cancel()
+	if err != nil {
+		res.Detail = fmt.Sprintf("%v: %s", err, strings.TrimSpace(string(out)))
+		logWatch("launch %s:%s: %s", r.Tree, r.Agent, res.Detail)
+		return res
+	}
+	outcome, ok := supatree.ParseOpenOutcome(string(out))
+	if !ok {
+		outcome = supatree.LaunchStarted
+	}
+	res.Outcome = outcome
+	logWatch("launch %s:%s in %s: %s", r.Tree, r.Agent, session, outcome)
+	return res
 }
 
 // runSchedule fires any due jobs by queueing them for the PM.

@@ -52,6 +52,7 @@ supatree stack dep fraud keystone terraform     # keystone's PR merges after ter
 supatree stack add fraud fraud-zero/admin-frontend --as admin
 supatree stack rm  fraud admin
 supatree stack clone git@github.com:you/fraud-stack.git   # adopt a teammate's stack
+supatree stack upgrade fraud                    # swap an old, unedited AGENTS.md template for the current one
 supatree repo ls                                # the repo cache: clones, size, trees using each
 supatree repo rm fraud-zero/keystone            # refuses while a tree has a worktree of it
 # edit ~/supatree/stacks/fraud/supatree.yml to add deps, commit it
@@ -66,6 +67,7 @@ supatree watch                                  # background poller: activity le
 supatree comments <tree> <repo>                 # what reviewers said, with unresolved threads first
 supatree pm [name]                              # a PM agent — sees every supatree at once
 supatree pm new <name> / pm rm <name> / pm ls   # several PMs, top first
+supatree pm config --init                       # a versioned repo for the PMs' instructions, skills, settings
 supatree request "…"                            # queue something for the PM
 supatree schedule                               # recurring PM work (standups, triage, reminders)
 supatree message <tree> <agent> "…"             # leave a message in an agent's mailbox
@@ -81,7 +83,7 @@ supatree review refresh <name>                  # authors pushed — re-fetch th
 supatree review fork <name>                     # turn the review into a proposal
 ```
 
-**When an agent tab will not start:** `supatree doctor` checks zellij, git, nono and every configured model's nono profile, including each profile it extends. Opening an agent or the PM checks its profile first and fails with nono's complaint; and an agent pane whose nono exits within a few seconds stays open on nono's output until you press enter (each launch is logged to `~/.local/state/supatree/logs/agent-exec.log`). After a nono upgrade, `nono outdated`, `nono list --installed` and `nono profile list` show what changed.
+**When an agent tab will not start:** `supatree doctor` checks zellij, git, nono and every configured model's nono profile, including each profile it extends. It also flags a stack whose `AGENTS.md` still carries an old copy of supatree's conventions, which now live in each tree's generated `.supatree/info.md`: `supatree stack upgrade <stack>` replaces an unedited copy and keeps what you added below it, and an edited copy is left for you to trim. Opening an agent or the PM checks its profile first and fails with nono's complaint; and an agent pane whose nono exits within a few seconds stays open on nono's output until you press enter (each launch is logged to `~/.local/state/supatree/logs/agent-exec.log`). After a nono upgrade, `nono outdated`, `nono list --installed` and `nono profile list` show what changed.
 
 `rename-branch` renames every member or none: if a member fails, the renames already made are rolled back, so the tree's recorded slug never points at a name only some members are on. With `--push` the pushes run after every local rename has landed, and a push failure is reported per repo without undoing the rename.
 
@@ -175,7 +177,18 @@ pm_model: claude-pm     # a models entry whose nono_profile scopes the gh creden
 
 It also cannot notify you directly — nothing inside the sandbox can — so its `notify` tool queues through the watcher, which applies the same tiering and deduping as its own events.
 
-**Several PMs.** `supatree pm new <name>` (or `a` on the sidebar's PM section) adds a PM below the others; `supatree pm rm <name>` (or `d`) removes one and closes its tab, and the last one cannot be removed. They all run in `~/.local/state/supatree/pm` with the same grants and instructions, and each resumes its own conversation by session ID; the list lives in `pm/pms.yml`, top first. Requests are routed rather than shared: each PM reads the queue from its own offset and keeps what is addressed to it (`supatree request --to <name>`), and the **top** PM also takes everything addressed to nobody — the watcher, the scheduler, `m` — so two PMs never both act on one request. Tree agents reach the top PM as `pm` and any other as `pm-<name>`. The PM from before there were several stays as `pm`, with its old tab, address and conversation.
+**Several PMs.** `supatree pm new <name>` (or `p` in the sidebar) adds a PM below the others; `supatree pm rm <name>` (or `d`) removes one and closes its tab, and the last one cannot be removed. They all run in `~/.local/state/supatree/pm` with the same grants and base instructions, and each resumes its own conversation by session ID; the list lives in `~/.local/state/supatree/pms.yml`, top first, outside the PMs' home so no PM can rewrite it (`supatree doctor` flags a `pm/pms.yml` that reappears there). Requests are routed rather than shared: each PM reads the queue from its own offset and keeps what is addressed to it (`supatree request --to <name>`), and the **top** PM also takes everything addressed to nobody — the watcher, the scheduler, `m` — so two PMs never both act on one request. Tree agents reach the top PM as `pm` and any other as `pm-<name>`, through `message_agent`; the `agents` tool lists the PMs, from a roster (`~/.local/state/supatree/roster/pms.json`) republished on every registry change and granted to tree agents read-only, since the registry itself is not. The PM from before there were several stays as `pm`, with its old tab, address and conversation.
+
+**The PM config repo.** A PM's home is runtime state, so nothing in it can be committed, shared or differ between PMs. What shapes them lives in a git repo you own instead, which every PM reads at launch and none can write:
+
+```
+AGENTS.md                 appended to every PM's instructions
+.claude/                  skills, commands, settings.json, hooks — linked into the PMs' home
+pms/<name>/AGENTS.md      instructions for the PM called <name> alone ("pm" is the default PM)
+pms/<name>/settings.json  Claude settings for that PM alone (--settings)
+```
+
+`supatree pm config --init` creates one at `~/supatree/pm-config` — a README and an empty `pms/`, committed — and registers it; until you commit something to it, the PMs behave exactly as before. `supatree pm config <path | git-url>` registers an existing one instead (a URL is cloned to the same place). Either way it is refused anywhere an agent can write — the stacks, the trees, the repo cache, supatree's state — and checked again at every launch. Changes reach a PM when it is next opened; `supatree pm ls` flags a PM running an older commit. Adding `.claude/` takes over the PMs' home `.claude`; what stood there is moved aside to `.claude.moved-<time>`.
 
 ## Autonomy
 

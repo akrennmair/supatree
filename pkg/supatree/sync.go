@@ -46,7 +46,7 @@ func Sync(c *Config, root string, prune bool) (*SyncReport, error) {
 		if err != nil {
 			return report, err
 		}
-		if err := createMember(repo, path, meta, alias, report); err != nil {
+		if err := createMember(c, repo, path, meta, alias, report); err != nil {
 			return report, err
 		}
 		report.Created = append(report.Created, alias)
@@ -68,22 +68,27 @@ func Sync(c *Config, root string, prune bool) (*SyncReport, error) {
 	return report, nil
 }
 
-func createMember(repo *baseClone, path string, meta *Meta, alias string, report *SyncReport) error {
+func createMember(c *Config, repo *baseClone, path string, meta *Meta, alias string, report *SyncReport) error {
+	jail, err := c.gitJail()
+	if err != nil {
+		return err
+	}
+	jail = jail.reading(repo.URL)
 	branch := meta.MemberBranch(alias)
 	// A review member starts at the pull request's head rather than at the
 	// default branch. The commits live on refs/pull/<n>/head, which is also the
 	// only ref that reaches a PR opened from a fork.
 	if ref, ok := meta.Review[alias]; ok {
-		sha, err := git.FetchRef(repo.Clone, fmt.Sprintf("refs/pull/%d/head", ref.Number))
+		sha, err := fetchRef(jail, repo.Clone, fmt.Sprintf("refs/pull/%d/head", ref.Number))
 		if err != nil {
 			return fmt.Errorf("fetch %s#%d: %w", ref.Repo, ref.Number, err)
 		}
-		if err := git.CreateWorktreeAt(repo.Clone, path, branch, sha); err != nil {
+		if err := addWorktree(jail, repo.Clone, path, branch, sha); err != nil {
 			return fmt.Errorf("create member %q at %s#%d: %w", repo.Alias, ref.Repo, ref.Number, err)
 		}
 		return repoCopyFiles(repo, path, report)
 	}
-	offline, err := git.CreateWorktree(repo.Clone, path, branch)
+	offline, err := createWorktree(jail, repo.Clone, path, branch, "")
 	if err != nil {
 		return fmt.Errorf("create member %q: %w", repo.Alias, err)
 	}

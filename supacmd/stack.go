@@ -3,6 +3,7 @@ package supacmd
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -34,7 +35,9 @@ var stackAddCmd = &cobra.Command{
 	Long: "add records a member in the stack's supatree.yml, as a commit, and clones it\n" +
 		"into the repo cache now so the first tree does not wait for it. The alias —\n" +
 		"repos/<alias>/ in every tree — defaults to the repository's name; --as picks\n" +
-		"another. Existing trees get it on their next sync.",
+		"another. The commit is pushed to the stack's default branch — trees are built\n" +
+		"from its origin — or, if that branch refuses pushes, to a branch with a pull\n" +
+		"request. It fails when the edit could not be published.",
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		arg := args[1]
@@ -45,11 +48,8 @@ var stackAddCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if err := stCfg.StackAdd(args[0], alias, url, true); err != nil {
-			return err
-		}
-		fmt.Printf("added %s (%s) to %s — trees get it on: supatree sync <tree>\n", alias, url, args[0])
-		return nil
+		res, err := stCfg.StackAdd(args[0], alias, url, true, supatree.ByHuman)
+		return reportStackEdit(fmt.Sprintf("added %s (%s) to %s", alias, url, args[0]), res, err)
 	},
 }
 
@@ -61,11 +61,8 @@ var stackRmCmd = &cobra.Command{
 		"`supatree sync <tree> --prune`. The clone stays in the repo cache.",
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := stCfg.StackRm(args[0], args[1]); err != nil {
-			return err
-		}
-		fmt.Printf("removed %s from %s\n", args[1], args[0])
-		return nil
+		res, err := stCfg.StackRm(args[0], args[1], supatree.ByHuman)
+		return reportStackEdit(fmt.Sprintf("removed %s from %s", args[1], args[0]), res, err)
 	},
 }
 
@@ -74,11 +71,8 @@ var stackDepCmd = &cobra.Command{
 	Short: "Record that <from> depends on <to> (to's pull request merges first)",
 	Args:  cobra.ExactArgs(3),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := stCfg.StackDep(args[0], args[1], args[2]); err != nil {
-			return err
-		}
-		fmt.Printf("%s now depends on %s\n", args[1], args[2])
-		return nil
+		res, err := stCfg.StackDep(args[0], args[1], args[2], supatree.ByHuman)
+		return reportStackEdit(fmt.Sprintf("%s now depends on %s", args[1], args[2]), res, err)
 	},
 }
 
@@ -117,6 +111,70 @@ func init() {
 	stackAddCmd.Flags().StringVar(&stackAddAs, "as", "", "alias for the member (default: the repository name)")
 	stackCloneCmd.Flags().StringVar(&stackCloneAs, "as", "", "name to register the stack under (default: the repository name)")
 	stackCloneCmd.Flags().StringVar(&stackPath, "path", "", "where to clone the stack repo (default: ~/supatree/stacks/<name>)")
-	stackCmd.AddCommand(stackNewCmd, stackAddCmd, stackRmCmd, stackDepCmd, stackCloneCmd)
+	stackCmd.AddCommand(stackNewCmd, stackAddCmd, stackRmCmd, stackDepCmd, stackCloneCmd, stackPinCmd, stackUpgradeCmd)
 	rootCmd.AddCommand(stackCmd)
+}
+
+var stackUpgradeCmd = &cobra.Command{
+	Use:   "upgrade <stack>",
+	Short: "Replace an unedited old AGENTS.md template with the current one (committed to the stack repo)",
+	Long: "upgrade replaces the stack's AGENTS.md when it is an unedited copy of a template\n" +
+		"an older supatree scaffolded, keeping whatever you added below it. Supatree's\n" +
+		"conventions now live in each tree's generated .supatree/info.md, so the new\n" +
+		"template only points there. A copy you edited is left alone, with a note on\n" +
+		"what to trim. `supatree doctor` says which stacks need it. The commit is\n" +
+		"published like `stack add`'s.",
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		res, err := stCfg.UpgradeAgentsMD(args[0], supatree.ByHuman)
+		done := "upgraded " + args[0] + "'s " + supatree.AgentsMDName
+		if err == nil && res.Commit == "" {
+			done = args[0] + "'s " + supatree.AgentsMDName + " is already current"
+		}
+		return reportStackEdit(done, res, err)
+	},
+}
+
+var stackPinCmd = &cobra.Command{
+	Use:   "pin <stack> <origin-url>",
+	Short: "Record the stack's origin, so stack edits are published to it",
+	Long: "pin records the remote stack edits are published to — yours and the PM's —\n" +
+		"in supatree's config, which no agent can write. The URL must come from you,\n" +
+		"not from the checkout: its remotes are writable by the PM and every tree agent.\n" +
+		"Given only the stack, pin shows the checkout's current origin for you to check.\n" +
+		"`supatree stack clone` pins the URL it was given.",
+	Args: cobra.RangeArgs(1, 2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		stack := stCfg.FindStack(args[0])
+		if stack == nil {
+			return fmt.Errorf("stack %q not found", args[0])
+		}
+		if len(args) == 1 {
+			current := "(none)"
+			if out, err := exec.CommandContext(cmd.Context(), "git", "-C", stack.Path, "remote", "get-url", "origin").Output(); err == nil {
+				current = strings.TrimSpace(string(out))
+			}
+			return fmt.Errorf("give the URL to pin: supatree stack pin %s <url>\n(the checkout's origin is currently %s — confirm that is your stack's remote before pinning it)",
+				args[0], current)
+		}
+		url := supatree.AbsGitURL(args[1], "")
+		if err := supatree.PinStackOrigin(args[0], url); err != nil {
+			return err
+		}
+		fmt.Printf("pinned %s's origin: %s\n", args[0], url)
+		return nil
+	},
+}
+
+// reportStackEdit prints where a stack edit went, failing when the next tree
+// will not see it.
+func reportStackEdit(done string, res supatree.StackEditResult, err error) error {
+	if err != nil {
+		return err
+	}
+	if !res.Live() {
+		return fmt.Errorf("%s, but: %s", done, res.Summary())
+	}
+	fmt.Printf("%s\n%s\n", done, res.Summary())
+	return nil
 }

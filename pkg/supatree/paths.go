@@ -272,6 +272,19 @@ func PMDir() string {
 	return filepath.Join(StateRoot(), "pm")
 }
 
+// RosterDir holds what tree agents may know about the PMs: their names and
+// addresses, published from the registry in PMDir, which no tree agent is
+// granted. Agents get the directory read-only, not the file, so the atomic
+// replace that refreshes it does not fall outside the grant.
+func RosterDir() string {
+	return filepath.Join(StateRoot(), "roster")
+}
+
+// PMRosterPath is the published PM list, in RosterDir.
+func PMRosterPath() string {
+	return filepath.Join(RosterDir(), "pms.json")
+}
+
 // PMOffsetPath records how far the PM has read into the request queue. It lives
 // with the PM rather than with the queue because it is the reader's position,
 // not a property of the history.
@@ -285,9 +298,8 @@ func RequestsLockPath() string {
 }
 
 // PMTab is the Zellij tab name the PM opens into. Reserved the same way DashTab
-// is, so it can never collide with a supatree name — and, because
-// OpenOrFocusTab focuses a live tab rather than opening a second one, it is
-// also what makes the PM a singleton.
+// is, so it can never collide with a supatree name. (What keeps a PM to one
+// process is OpenPM's lock and the process registry, not the name.)
 const PMTab = "supatree-pm"
 
 // LaunchPath is the queue of agents the PM has asked to have started. It lives
@@ -296,6 +308,12 @@ const PMTab = "supatree-pm"
 // the tabs.
 func LaunchPath() string {
 	return filepath.Join(PMDir(), "launch.jsonl")
+}
+
+// LaunchResultsDir holds the watcher's answers to launch requests, one file per
+// request ID. In PMDir for the same reason as the queue.
+func LaunchResultsDir() string {
+	return filepath.Join(PMDir(), "launched")
 }
 
 // LaunchLockPath serializes appends to and drains of the launch queue.

@@ -74,8 +74,15 @@ func TestAddAndRemovePMs(t *testing.T) {
 		t.Error("a PM name that is not a path segment was accepted")
 	}
 
+	// Reading a PM's inbox leaves a lock beside it; removing the PM takes both.
+	if _, err := Mail(PMDir(), PMAgentName); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := RemovePM(DefaultPMName); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := os.Stat(mailLockPath(PMDir(), PMAgentName)); !os.IsNotExist(err) {
+		t.Errorf("removed PM's mail lock still exists (stat err = %v)", err)
 	}
 	if top, _ := ResolvePM(""); top.Name != "research" {
 		t.Errorf("top after removing the default = %q, want research promoted", top.Name)
@@ -178,19 +185,216 @@ func TestForwardPMMailAddressesThePM(t *testing.T) {
 // opens the PM.
 func TestColdStartMarkerIsTakenOnce(t *testing.T) {
 	testutil.IsolateHome(t)
-	if TakeColdStart("st-main") {
+	if TakeColdStart(sessionMain) {
 		t.Fatal("took a marker nobody set")
 	}
-	if err := MarkColdStart("st-main"); err != nil {
+	if err := MarkColdStart(sessionMain); err != nil {
 		t.Fatal(err)
 	}
-	if !TakeColdStart("st-main") {
+	if !TakeColdStart(sessionMain) {
 		t.Fatal("marker not taken")
 	}
-	if TakeColdStart("st-main") {
+	if TakeColdStart(sessionMain) {
 		t.Error("marker taken twice — every sidebar would open the PM")
 	}
 	if TakeColdStart("") {
 		t.Error("an empty session took a marker")
+	}
+}
+
+// A PM the registry shows running is found by name, so OpenPM focuses or
+// refuses instead of starting it twice (#1).
+func TestRunningPM(t *testing.T) {
+	testutil.IsolateHome(t)
+	orig := procIsAgentExec
+	procIsAgentExec = func(int) bool { return true }
+	t.Cleanup(func() { procIsAgentExec = orig })
+
+	registerProc(ProcRecord{PID: os.Getpid(), PM: pmReviews, Session: "st-main"})
+	if r, ok := runningPM(PM{Name: pmReviews}); !ok || r.PID != os.Getpid() {
+		t.Errorf("runningPM(reviews) = %+v, %v; want the recorded process", r, ok)
+	}
+	if _, ok := runningPM(PM{Name: DefaultPMName}); ok {
+		t.Error("another PM's process was taken for the top PM's")
+	}
+}
+
+func TestLaunchCaller(t *testing.T) {
+	orig := os.Args
+	t.Cleanup(func() { os.Args = orig })
+	os.Args = []string{"supatree", "open", "lima", "--agent", MainAgent, "--background"}
+	if got := launchCaller(); got != "watcher" {
+		t.Errorf("background open: %q, want watcher", got)
+	}
+	os.Args = []string{"supatree", "pm", pmReviews}
+	if got := launchCaller(); got != "cli(supatree pm reviews)" {
+		t.Errorf("pm: %q", got)
+	}
+	t.Setenv("SUPATREE_SIDEBAR", "1")
+	if got := launchCaller(); got != "sidebar" {
+		t.Errorf("sidebar: %q", got)
+	}
+}
+
+// Tree agents cannot read the registry, so every change to it republishes the
+// roster they can: names and addresses, top first, and no session IDs.
+func TestRosterFollowsTheRegistry(t *testing.T) {
+	testutil.IsolateHome(t)
+	if _, err := AddPM("roshi", ""); err != nil {
+		t.Fatal(err)
+	}
+	roster, err := ReadPMRoster()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []RosterPM{{Name: DefaultPMName, Agent: PMAgentName, Top: true}, {Name: "roshi", Agent: PMAgentName + "-roshi"}}
+	if len(roster) != len(want) || roster[0] != want[0] || roster[1] != want[1] {
+		t.Fatalf("roster = %+v, want %+v", roster, want)
+	}
+	data, _ := os.ReadFile(PMRosterPath())
+	if strings.Contains(string(data), "session") {
+		t.Errorf("roster leaks session state: %s", data)
+	}
+	if !strings.Contains(pmSection(), "message_agent pm-roshi") {
+		t.Errorf("agents' PM section does not address roshi:\n%s", pmSection())
+	}
+
+	if _, err := RemovePM(DefaultPMName); err != nil {
+		t.Fatal(err)
+	}
+	roster, _ = ReadPMRoster()
+	if len(roster) != 1 || roster[0].Name != "roshi" || !roster[0].Top {
+		t.Errorf("after removing the top PM, roster = %+v; want roshi alone, on top", roster)
+	}
+}
+
+// Without a roster the agents listing still says how PMs are addressed.
+func TestPMSectionWithoutARoster(t *testing.T) {
+	testutil.IsolateHome(t)
+	if got := pmSection(); !strings.Contains(got, "`pm-<name>`") {
+		t.Errorf("pmSection() = %q; want the address pattern", got)
+	}
+}
+
+// Tree agents read the roster and nothing else of the PMs': not the registry,
+// and not the roster for writing, or one could redirect another's reports.
+func TestTreeAgentsReadOnlyTheRoster(t *testing.T) {
+	testutil.IsolateHome(t)
+	inst := &Instance{Name: "t", Root: t.TempDir(), Members: []Member{{Alias: "a", Path: t.TempDir()}}}
+	for name, g := range map[string]struct{ allow, read []string }{
+		"tree":   {TreeGrants(&Config{}, inst).Allow, TreeGrants(&Config{}, inst).Read},
+		"member": {MemberGrants(&Config{}, inst, "a").Allow, MemberGrants(&Config{}, inst, "a").Read},
+	} {
+		if !strings.Contains(strings.Join(g.read, " "), RosterDir()) {
+			t.Errorf("%s: Read = %v, want the roster", name, g.read)
+		}
+		for _, p := range append(append([]string{}, g.allow...), g.read...) {
+			if p == PMDir() || p == StateRoot() {
+				t.Errorf("%s: granted %q — the PM registry is not a tree agent's", name, p)
+			}
+		}
+		for _, p := range g.allow {
+			if p == RosterDir() {
+				t.Errorf("%s: the roster is writable", name)
+			}
+		}
+	}
+}
+
+// A launch's refresh writes what the registry says now.
+func TestPublishPMRoster(t *testing.T) {
+	testutil.IsolateHome(t)
+	if _, err := AddPM("roshi", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(PMRosterPath()); err != nil {
+		t.Fatal(err)
+	}
+	if err := PublishPMRoster(); err != nil {
+		t.Fatal(err)
+	}
+	if roster, err := ReadPMRoster(); err != nil || len(roster) != 2 {
+		t.Errorf("roster = %+v, %v; want both PMs", roster, err)
+	}
+}
+
+// A registry from before #23 sat in the PMs' writable home. It is moved out
+// once, keeping what `pm new` would have written and nothing else, and what a
+// PM writes there afterwards is never read.
+func TestLegacyPMRegistryIsMigratedOnce(t *testing.T) {
+	testutil.IsolateHome(t)
+	const sid = "0f8fad5b-d9cb-469f-a165-70867728950e"
+	writeFile(t, legacyPMsPath(), `pms:
+  - name: scout
+    session_id: not-a-session
+    model: loose
+    config_at: deadbeef
+  - name: pm
+    session_id: `+sid+`
+  - name: ../escape
+    session_id: `+sid+`
+  - name: scout
+    session_id: `+sid+`
+`)
+	pms, err := LoadPMs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pms) != 2 || pms[0].Name != DefaultPMName || pms[1].Name != "scout" {
+		t.Fatalf("pms = %+v, want pm then scout", pms)
+	}
+	if pms[0].SessionID != sid {
+		t.Errorf("the top PM's session = %q, want it kept", pms[0].SessionID)
+	}
+	if pms[1].SessionID == "not-a-session" || !sessionIDPattern.MatchString(pms[1].SessionID) {
+		t.Errorf("scout's session = %q, want a fresh one in place of what the PM wrote", pms[1].SessionID)
+	}
+	if pms[1].Model != "" || pms[1].ConfigAt != "" {
+		t.Errorf("scout kept model %q, config_at %q from a PM-writable file", pms[1].Model, pms[1].ConfigAt)
+	}
+	if _, err := os.Stat(legacyPMsPath()); !os.IsNotExist(err) {
+		t.Errorf("the old registry is still there: %v", err)
+	}
+	if _, ok := LegacyPMRegistry(); ok {
+		t.Error("doctor would flag a registry that was just migrated")
+	}
+
+	// A PM writing the old file again changes nothing, and doctor says so.
+	writeFile(t, legacyPMsPath(), "pms:\n  - name: usurper\n    session_id: "+sid+"\n")
+	again, err := LoadPMs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again) != 2 || again[0].Name != DefaultPMName {
+		t.Errorf("after a PM rewrote the old file, pms = %+v", again)
+	}
+	if _, ok := LegacyPMRegistry(); !ok {
+		t.Error("doctor would not flag an old registry written after the migration")
+	}
+}
+
+// Inside the PM's sandbox the registry cannot be read; request routing works
+// from the roster instead.
+func TestRoutingPMsFallsBackToTheRoster(t *testing.T) {
+	testutil.IsolateHome(t)
+	if _, err := AddPM("roshi", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(PMsPath(), 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(PMsPath(), 0644) })
+	if _, err := os.ReadFile(PMsPath()); err == nil {
+		t.Skip("running as a user that can read a mode-0 file")
+	}
+	pms, err := RoutingPMs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pms) != 2 || pms[0].Name != DefaultPMName || pms[1].Name != "roshi" {
+		t.Errorf("pms = %+v, want pm then roshi from the roster", pms)
+	}
+	if p, err := ResolvePM("roshi"); err != nil || p.OffsetPath() != filepath.Join(PMDir(), "requests.roshi.offset") {
+		t.Errorf("ResolvePM(roshi) = %+v, %v", p, err)
 	}
 }

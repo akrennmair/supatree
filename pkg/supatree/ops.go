@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -28,10 +29,20 @@ import (
 type OpKind string
 
 const (
-	OpNew    OpKind = "new"    // create a tree from a stack
-	OpReview OpKind = "review" // create a review tree for pull requests
-	OpRemove OpKind = "remove" // remove a tree
-	OpSync   OpKind = "sync"   // reconcile a tree's members with its spec
+	OpNew       OpKind = "new"        // create a tree from a stack
+	OpReview    OpKind = "review"     // create a review tree for pull requests
+	OpRemove    OpKind = "remove"     // remove a tree
+	OpSync      OpKind = "sync"       // reconcile a tree's members with its spec
+	OpStop      OpKind = "stop"       // stop agent processes (a tree's, or orphans)
+	OpStack     OpKind = "stack"      // edit a stack: add, rm or dep a member
+	OpReviewAdd OpKind = "review-add" // add pull requests to a review tree
+)
+
+// Stack edit actions, for OpStack.
+const (
+	StackActionAdd = "add"
+	StackActionRm  = "rm"
+	StackActionDep = "dep"
 )
 
 // Op is one request.
@@ -46,6 +57,14 @@ type Op struct {
 	Tree   string    `json:"tree,omitempty"`
 	Force  bool      `json:"force,omitempty"`
 	Prune  bool      `json:"prune,omitempty"`
+	// Agent and Orphans select what OpStop stops, with Tree.
+	Agent   string `json:"agent,omitempty"`
+	Orphans bool   `json:"orphans,omitempty"`
+	// Action, Alias, URL and DependsOn describe an OpStack edit of Stack.
+	Action    string `json:"action,omitempty"`
+	Alias     string `json:"alias,omitempty"`
+	URL       string `json:"url,omitempty"`
+	DependsOn string `json:"depends_on,omitempty"`
 }
 
 // OpResult is the watcher's answer.
@@ -237,8 +256,10 @@ func OpSources(insts []*Instance) []string {
 // OpHooks lets the caller act on what an operation did with things this
 // package cannot reach (zellij tabs and layouts).
 type OpHooks struct {
-	// Removed is called after a tree has been removed.
-	Removed func(tree string, res *RemoveResult)
+	// Removed is called after a tree has been removed, and returns warnings
+	// for the answer: a removal whose tabs could not be closed must not be
+	// reported as clean.
+	Removed func(tree string, res *RemoveResult) []string
 }
 
 // RunOp carries out a claimed request. It never panics on bad input; every
@@ -260,6 +281,12 @@ func (c *Config) RunOp(claimed ClaimedOp, hooks OpHooks) OpResult {
 		err = c.runRemove(op, &res, hooks)
 	case OpSync:
 		err = c.runSync(op, &res, filepath.Clean(claimed.Dir) != PMDir())
+	case OpStop:
+		err = runStop(op, &res)
+	case OpStack:
+		err = c.runStackEdit(op, &res)
+	case OpReviewAdd:
+		err = c.runReviewAdd(op, &res, filepath.Clean(claimed.Dir) != PMDir())
 	default:
 		err = fmt.Errorf("unknown operation %q", op.Kind)
 	}
@@ -275,7 +302,7 @@ func (c *Config) authorizeOp(claimed ClaimedOp) error {
 	if filepath.Clean(claimed.Dir) == PMDir() {
 		return nil
 	}
-	if claimed.Op.Kind != OpSync {
+	if claimed.Op.Kind != OpSync && claimed.Op.Kind != OpReviewAdd {
 		return fmt.Errorf("%s may only be requested by the PM", claimed.Op.Kind)
 	}
 	inst, err := Get(c, claimed.Op.Tree)
@@ -283,9 +310,146 @@ func (c *Config) authorizeOp(claimed ClaimedOp) error {
 		return err
 	}
 	if filepath.Clean(StateDir(inst.Root)) != filepath.Clean(claimed.Dir) {
-		return fmt.Errorf("a tree may only sync itself")
+		return fmt.Errorf("a tree may only %s itself", claimed.Op.Kind)
 	}
 	return nil
+}
+
+// runReviewAdd adds pull requests to a review tree, for its own agent or the
+// PM. In the watcher: a new member may need a clone, and resolving a PR needs
+// gh. Asked for by the tree itself, the spec it maps against is vetted as for
+// a sync — a tree may only pull in repositories its stack already has.
+func (c *Config) runReviewAdd(op Op, res *OpResult, fromTree bool) error {
+	inst, err := Get(c, op.Tree)
+	if err != nil {
+		return err
+	}
+	refs, err := ResolvePRRefs(op.PRs)
+	if err != nil {
+		return err
+	}
+	from := PMAgentName
+	if fromTree {
+		from = MainAgent
+	}
+	results, err := AddReview(c, inst.Name, refs, from, fromTree)
+	res.Tree = op.Tree
+	res.Text = FormatAddResults(results)
+	return err
+}
+
+// FormatAddResults renders what AddReview did.
+func FormatAddResults(results []AddResult) string {
+	var b strings.Builder
+	n := 0
+	for _, r := range results {
+		if r.Skipped != "" {
+			fmt.Fprintf(&b, "%s: not added — %s\n", r.PR, r.Skipped)
+			continue
+		}
+		n++
+		fmt.Fprintf(&b, "%s: added as repos/%s at %s\n", r.PR, r.Alias, shortSHA(r.Head))
+	}
+	if n > 0 {
+		b.WriteString("\nThe tree's agent has been told by mail. A running agent without a restart cannot commit in a member created just now; it can read it.")
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// runStackEdit edits a stack for the PM. In the watcher, not the PM's sandbox:
+// publishing the edit pushes to the stack's remote, and adding a member clones
+// it into the repo cache, neither of which the PM can do (#17). An edit that
+// the next tree will not see is an error, however much of it succeeded.
+//
+// Everything the PM supplies is data: the edit is made in a private clone of
+// the origin a human pinned (ByWatcher), and a member it adds must be a
+// remote repository — a local path would have the watcher copy any repo on
+// this machine into the cache, where the PM can read it.
+func (c *Config) runStackEdit(op Op, res *OpResult) error {
+	var (
+		done   string
+		result StackEditResult
+		err    error
+	)
+	switch op.Action {
+	case StackActionAdd:
+		if !isRemoteRepoURL(op.URL) {
+			return fmt.Errorf("%q is not a remote repository URL — a PM may only add remote repositories to a stack", op.URL)
+		}
+		result, err = c.StackAdd(op.Stack, op.Alias, op.URL, true, ByWatcher)
+		done = fmt.Sprintf("added %s (%s) to %s.", op.Alias, op.URL, op.Stack)
+	case StackActionRm:
+		result, err = c.StackRm(op.Stack, op.Alias, ByWatcher)
+		done = fmt.Sprintf("removed %s from %s.", op.Alias, op.Stack)
+	case StackActionDep:
+		result, err = c.StackDep(op.Stack, op.Alias, op.DependsOn, ByWatcher)
+		done = fmt.Sprintf("%s now depends on %s in %s.", op.Alias, op.DependsOn, op.Stack)
+	default:
+		return fmt.Errorf("unknown stack edit %q", op.Action)
+	}
+	if err != nil {
+		return err
+	}
+	text := done + " " + result.Summary()
+	if !result.Live() {
+		return errors.New(text)
+	}
+	res.Text = text
+	return nil
+}
+
+// isRemoteRepoURL reports whether url is a repository a PM may have the
+// watcher clone: https://host/owner/name, ssh://git@host/owner/name or
+// git@host:owner/name, on a host the cache already holds clones from (or
+// github.com). An allowlist, not a parser: lenient parsing is how
+// "/any/dir:owner/name" passed for host:owner/name while git cloned it as a
+// local path, and every other transport git knows is refused by not being
+// listed. The host list keeps the watcher's credentials — which reach hosts the
+// PM cannot — from fetching from anywhere the PM names into a cache it reads.
+// Swappable in tests, whose remotes are local.
+var isRemoteRepoURL = func(url string) bool {
+	if !remoteRepoURL.MatchString(url) || isLocalGitURL(url) {
+		return false
+	}
+	r, ok := resolveRemote(url)
+	return ok && knownRepoHosts()[strings.ToLower(r.Host)]
+}
+
+// Each segment starts with a letter or digit: no "." or "..", no leading "-".
+var remoteRepoURL = regexp.MustCompile(
+	`^(?:https://[A-Za-z0-9][A-Za-z0-9.-]*(?::[0-9]+)?/` +
+		`|ssh://git@[A-Za-z0-9][A-Za-z0-9.-]*(?::[0-9]+)?/` +
+		`|git@[A-Za-z0-9][A-Za-z0-9.-]*:)` +
+		`[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*?(?:\.git)?/?$`)
+
+// knownRepoHosts are the hosts a human has already had supatree clone from —
+// the cache's top-level directories — plus github.com.
+func knownRepoHosts() map[string]bool {
+	hosts := map[string]bool{"github.com": true}
+	entries, _ := os.ReadDir(ReposDir())
+	for _, e := range entries {
+		if e.IsDir() && e.Name() != "local" && !strings.HasPrefix(e.Name(), ".") {
+			hosts[strings.ToLower(e.Name())] = true
+		}
+	}
+	return hosts
+}
+
+// runStop stops agent processes for the PM, whose sandbox can neither see
+// nor signal them.
+func runStop(op Op, res *OpResult) error {
+	stopped, err := StopAgents(StopTarget{Tree: op.Tree, Agent: op.Agent, Orphans: op.Orphans})
+	res.Tree = op.Tree
+	if len(stopped) == 0 && err == nil {
+		res.Text = "no matching agent process was running."
+		return nil
+	}
+	var b strings.Builder
+	for _, r := range stopped {
+		fmt.Fprintf(&b, "stopped %s (pid %d)\n", r.Who(), r.PID)
+	}
+	res.Text = strings.TrimSpace(b.String())
+	return err
 }
 
 func (c *Config) runNew(op Op, res *OpResult) error {
@@ -326,13 +490,14 @@ func (c *Config) runRemove(op Op, res *OpResult, hooks OpHooks) error {
 	if err != nil {
 		return err
 	}
+	warnings := removed.Warnings
 	if hooks.Removed != nil {
-		hooks.Removed(op.Tree, removed)
+		warnings = append(warnings, hooks.Removed(op.Tree, removed)...)
 	}
 	res.Tree = op.Tree
 	res.Text = "removed supatree " + op.Tree
-	if len(removed.Warnings) > 0 {
-		res.Text += "\nwarnings: " + strings.Join(removed.Warnings, "; ")
+	if len(warnings) > 0 {
+		res.Text += "\nwarnings: " + strings.Join(warnings, "; ")
 	}
 	return nil
 }
@@ -394,24 +559,34 @@ func reportWarnings(report *SyncReport) string {
 // (as committed in the stack's own checkout, which no agent can write) nor the
 // repo cache knows.
 func (c *Config) vetTreeSpec(inst *Instance) error {
+	spec := &Spec{Members: map[string]string{}}
+	for _, m := range inst.Members {
+		spec.Members[m.Alias] = m.URL
+	}
+	return c.vetSpec(inst.Stack, spec)
+}
+
+// vetSpec checks every member of spec is in the stack or the repo cache.
+func (c *Config) vetSpec(stackAlias string, spec *Spec) error {
 	known := map[string]bool{}
-	if stack := c.FindStack(inst.Stack); stack != nil {
-		if spec, err := LoadSpec(stack.Path); err == nil {
-			for _, url := range spec.Members {
+	if stack := c.FindStack(stackAlias); stack != nil {
+		if stackSpec, err := LoadSpec(stack.Path); err == nil {
+			for _, url := range stackSpec.Members {
 				if key, err := CacheKey(url); err == nil {
 					known[key] = true
 				}
 			}
 		}
 	}
-	for _, m := range inst.Members {
-		key, err := CacheKey(m.URL)
+	for _, alias := range spec.Aliases() {
+		url := spec.Members[alias]
+		key, err := CacheKey(url)
 		if err != nil {
-			return fmt.Errorf("member %q: %w", m.Alias, err)
+			return fmt.Errorf("member %q: %w", alias, err)
 		}
 		if !known[key] && !isClone(filepath.Join(ReposDir(), key)) {
 			return fmt.Errorf("member %q (%s) is neither in stack %s nor in the repo cache — add it to the stack first: supatree stack add %s %s",
-				m.Alias, m.URL, inst.Stack, inst.Stack, m.URL)
+				alias, url, stackAlias, stackAlias, url)
 		}
 	}
 	return nil

@@ -3,7 +3,6 @@ package supatree
 import (
 	"os"
 	"path/filepath"
-	"sort"
 
 	"github.com/panamafrancis/workbench/pkg/config"
 	"github.com/panamafrancis/workbench/pkg/sandbox"
@@ -45,7 +44,7 @@ func AgentProfile() setup.Profile {
 }
 
 // TreeGrants is a root agent's per-launch reach: its own tree, its own state,
-// and the git directories its commits land in — the stack's (the tree is a
+// the PM roster read-only (so it can name a PM to message), and the git directories its commits land in — the stack's (the tree is a
 // worktree of it) and each member's base clone (each member is a worktree of
 // one). Only this tree's: a coding agent is never granted another tree's state
 // or the whole repo cache.
@@ -53,7 +52,7 @@ func AgentProfile() setup.Profile {
 // Grants are fixed when nono starts, so a member that sync adds later is not
 // committable until the agent restarts.
 func TreeGrants(c *Config, inst *Instance) sandbox.Grants {
-	g := sandbox.Grants{Allow: []string{inst.Root, StateDir(inst.Root)}}
+	g := sandbox.Grants{Allow: []string{inst.Root, StateDir(inst.Root)}, Read: []string{RosterDir()}}
 	if dir, err := GitCommonDir(inst.Root); err == nil {
 		g.Allow = append(g.Allow, dir)
 	}
@@ -63,8 +62,8 @@ func TreeGrants(c *Config, inst *Instance) sandbox.Grants {
 }
 
 // MemberGrants is a member-scoped agent's reach: that member's worktree and its
-// base clone's git dir, the tree's state (mail, meta), and the tree root to
-// read the spec and instructions.
+// base clone's git dir, the tree's state (mail, meta), the tree root to read
+// the spec and instructions, and the PM roster.
 func MemberGrants(c *Config, inst *Instance, alias string) sandbox.Grants {
 	m := inst.FindMember(alias)
 	if m == nil {
@@ -72,7 +71,7 @@ func MemberGrants(c *Config, inst *Instance, alias string) sandbox.Grants {
 	}
 	g := sandbox.Grants{
 		Allow: []string{m.Path, StateDir(inst.Root)},
-		Read:  []string{inst.Root},
+		Read:  []string{inst.Root, RosterDir()},
 	}
 	g.Allow = append(g.Allow, memberGitDirs(c, inst, alias)...)
 	g.Allow = dedupe(g.Allow)
@@ -106,7 +105,7 @@ func memberGitDirs(c *Config, inst *Instance, only string) []string {
 func EnsureLayout() error {
 	for _, dir := range []string{
 		ConfigDir(), StateRoot(), CacheDir(), AgentCacheDir(),
-		TreesStateDir(), PMDir(), LedgerDir(), OutboxDir(), RequestsDir(), LogsDir(),
+		TreesStateDir(), PMDir(), LedgerDir(), OutboxDir(), RequestsDir(), LogsDir(), ReposDir(), RosterDir(),
 	} {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return err
@@ -126,15 +125,5 @@ func dedupe(paths []string) []string {
 		seen[p] = true
 		out = append(out, p)
 	}
-	return out
-}
-
-// sortedKeys returns m's keys in order, for stable grant lists.
-func sortedKeys(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
 	return out
 }

@@ -124,6 +124,17 @@ func MCPServer(version string) *mcp.Server {
 				Handler:     handleReviewRefresh,
 			},
 			{
+				Name: "review_add",
+				Description: "Review trees: add more pull requests to this review tree — the same change, grown — without recreating it, so review.md and your context are kept. Each PR's repo must be a member of the stack; a member with uncommitted work or commits of its own is reported, not moved. " +
+					"The PM passes `tree` (and `asked`, below autonomy 'auto').",
+				InputSchema: mcp.ObjectSchema(map[string]any{
+					"prs":        mcp.StringProp("Pull requests to add: URLs or owner/repo#n, comma-separated"),
+					argTree:      mcp.StringProp("PM only: the review tree to add them to"),
+					argAskedName: mcp.BoolProp("PM only: the human asked for this in this turn"),
+				}, []string{"prs"}),
+				Handler: handleReviewAdd,
+			},
+			{
 				Name:        "pr_status",
 				Description: "Look up the PR status of every member branch and return an aggregate.",
 				InputSchema: mcp.EmptyObject(),
@@ -131,7 +142,7 @@ func MCPServer(version string) *mcp.Server {
 			},
 			{
 				Name:        "agents",
-				Description: "List the agents attached to a supatree: their names, models, bus addresses and whether each is reachable now. Use an address with your own message-bus tool to reach one directly.",
+				Description: "List the agents attached to a supatree: their names, models, bus addresses and whether each is reachable now. Use an address with your own message-bus tool to reach one directly. It also lists the PMs, with the name `message_agent` reaches each by.",
 				InputSchema: mcp.ObjectSchema(map[string]any{
 					argTree: mcp.StringProp("Supatree name (omit inside a supatree to mean your own)"),
 				}, nil),
@@ -139,9 +150,9 @@ func MCPServer(version string) *mcp.Server {
 			},
 			{
 				Name:        "message_agent",
-				Description: "Send a message to another agent in this supatree. Always delivered to the agent's mailbox, which it reads on its next turn; pair it with your own message-bus tool (see the address from `agents`) if you need it to arrive sooner.",
+				Description: "Send a message to another agent in this supatree. Always delivered to the agent's mailbox, which it reads on its next turn; pair it with your own message-bus tool (see the address from `agents`) if you need it to arrive sooner. To reach a PM, which is in no tree, use agent `pm` for the top PM or `pm-<name>` for a named one (e.g. `pm-roshi`).",
 				InputSchema: mcp.ObjectSchema(map[string]any{
-					"agent": mcp.StringProp("Agent name within the supatree (not its bus address)"),
+					"agent": mcp.StringProp("Agent name within the supatree (not its bus address), or `pm` / `pm-<name>` for a PM"),
 					"text":  mcp.StringProp("What to tell it"),
 					argTree: mcp.StringProp("Supatree name (omit inside a supatree to mean your own)"),
 				}, []string{"agent", "text"}),
@@ -232,7 +243,7 @@ func MCPServer(version string) *mcp.Server {
 			},
 			{
 				Name:        "start_agent",
-				Description: "PM: launch an agent in an existing supatree, in the background, briefed and working. The brief is left in its mailbox and the agent is started with an instruction to read it; if the agent is already running, it gets the brief on its next turn instead. Same autonomy rule as new_tree.",
+				Description: "PM: launch an agent in an existing supatree, in the background, briefed and working. The brief is left in its mailbox and the agent is started with an instruction to read it; if the agent is already running and idle, it is woken in place to read it. The result says whether the agent was started, woken, only mailed, or is still queued (launches wait while max_running_agents agents are busy). Same autonomy rule as new_tree.",
 				InputSchema: mcp.ObjectSchema(map[string]any{
 					argTree:      mcp.StringProp("Supatree name"),
 					"agent":      mcp.StringProp("Agent name (default main)"),
@@ -242,8 +253,19 @@ func MCPServer(version string) *mcp.Server {
 				Handler: handleStartAgent,
 			},
 			{
+				Name:        "stop_agent",
+				Description: "PM: stop running agent processes — one agent of a tree, all of a tree's, or every orphan (an agent process whose tab is gone, which nobody can see or close). You cannot see processes yourself; `orphans` is how leftovers from a crash or a removed tree are cleaned up. Needs autonomy 'auto' to do unasked, or `asked`.",
+				InputSchema: mcp.ObjectSchema(map[string]any{
+					"tree":       mcp.StringProp("Supatree whose agents to stop"),
+					"agent":      mcp.StringProp("Only this agent of the tree (default: all of them)"),
+					"orphans":    mcp.BoolProp("Stop every agent process that has no tab"),
+					argAskedName: mcp.BoolProp("The human asked for this in this turn"),
+				}, nil),
+				Handler: handleStopAgent,
+			},
+			{
 				Name:        "remove_tree",
-				Description: "PM: remove a finished supatree and its member worktrees. Needs autonomy 'auto' to do unasked, or `asked` when the human has asked you to; refuses a tree that is not done unless forced.",
+				Description: "PM: remove a finished supatree and its member worktrees. Needs autonomy 'auto' to do unasked, or `asked` when the human has asked you to; refuses a tree that is not done (or, for a review tree, reviewed) unless forced.",
 				InputSchema: mcp.ObjectSchema(map[string]any{
 					"tree":       mcp.StringProp("Supatree name"),
 					"force":      mcp.BoolProp("Remove even though it is not finished"),
@@ -253,10 +275,10 @@ func MCPServer(version string) *mcp.Server {
 			},
 			{
 				Name:        "stack_add",
-				Description: "PM: add a member repo to a stack, committed to the stack repo. Trees get it on their next sync; the repository is cloned when a tree first needs it. Needs autonomy 'auto' to do unasked, or `asked`.",
+				Description: "PM: add a member repo to a stack. The watcher commits it, pushes it to the stack's default branch (or opens a pull request if that branch refuses pushes) and clones the repository; the answer says whether new trees will see it, and is an error when they will not. Existing trees keep their own copy of the spec. Needs autonomy 'auto' to do unasked, or `asked`.",
 				InputSchema: mcp.ObjectSchema(map[string]any{
 					argStack:     mcp.StringProp("Stack alias"),
-					"repo":       mcp.StringProp("owner/repo (GitHub, over ssh) or a git URL"),
+					"repo":       mcp.StringProp("owner/repo (GitHub, over ssh), or git@host:owner/name / https://host/owner/name on a host supatree already clones from"),
 					"as":         mcp.StringProp("Member alias (default: the repository name)"),
 					argAskedName: mcp.BoolProp("The human asked for this in this turn"),
 				}, []string{"stack", "repo"}),
@@ -264,7 +286,7 @@ func MCPServer(version string) *mcp.Server {
 			},
 			{
 				Name:        "stack_rm",
-				Description: "PM: remove a member from a stack (and its dependency edges), committed to the stack repo. Existing trees keep it until synced with prune. Needs autonomy 'auto' to do unasked, or `asked`.",
+				Description: "PM: remove a member from a stack (and its dependency edges), committed and pushed like stack_add. Existing trees keep it until synced with prune. Needs autonomy 'auto' to do unasked, or `asked`.",
 				InputSchema: mcp.ObjectSchema(map[string]any{
 					argStack:     mcp.StringProp("Stack alias"),
 					"alias":      mcp.StringProp("Member alias"),
@@ -274,7 +296,7 @@ func MCPServer(version string) *mcp.Server {
 			},
 			{
 				Name:        "stack_dep",
-				Description: "PM: record in a stack that member `from` depends on member `to` (to's pull request merges first), committed to the stack repo. Needs autonomy 'auto' to do unasked, or `asked`.",
+				Description: "PM: record in a stack that member `from` depends on member `to` (to's pull request merges first), committed and pushed like stack_add. Needs autonomy 'auto' to do unasked, or `asked`.",
 				InputSchema: mcp.ObjectSchema(map[string]any{
 					argStack:     mcp.StringProp("Stack alias"),
 					"from":       mcp.StringProp("The dependent member"),
@@ -595,6 +617,39 @@ func handleReviewRefresh(map[string]any) (string, bool) {
 	return b.String(), false
 }
 
+func handleReviewAdd(args map[string]any) (string, bool) {
+	prs, _ := args["prs"].(string)
+	list := splitList(prs)
+	if len(list) == 0 {
+		return "prs is required", true
+	}
+	inst, err := resolveTree(args)
+	if err != nil {
+		return err.Error(), true
+	}
+	if !inst.Reviewing() {
+		return fmt.Sprintf("%s is not a review tree — new_tree with prs creates one.", inst.Name), true
+	}
+	dir := StateDir(inst.Root)
+	if os.Getenv("SUPATREE_PM") == "1" {
+		cfg, err := Load()
+		if err != nil {
+			return err.Error(), true
+		}
+		meta, err := LoadMeta(inst.Root)
+		if err != nil {
+			return err.Error(), true
+		}
+		if p := cfg.Resolve(meta).AsAsked(argAsked(args)); !p.AllowsMutation() {
+			return p.Deny("adding pull requests to a review tree"), true
+		}
+		dir = PMDir()
+	}
+	// The watcher does it: a new member may need a clone, and resolving each
+	// PR needs gh.
+	return opReply(RequestOp(dir, Op{Kind: OpReviewAdd, Tree: inst.Name, PRs: list}, opTimeout))
+}
+
 func shortSHA(sha string) string {
 	if len(sha) > 8 {
 		return sha[:8]
@@ -901,9 +956,10 @@ func handleAgents(args map[string]any) (string, bool) {
 		return err.Error(), true
 	}
 	if len(agents) == 0 {
-		return "no agents have been launched in this supatree yet", false
+		return "no agents have been launched in this supatree yet\n\n" + pmSection(), false
 	}
 	me := os.Getenv("SUPATREE_AGENT")
+	cfg, _ := Load()
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "Agents in %s:\n", inst.Name)
@@ -916,8 +972,8 @@ func handleAgents(args map[string]any) (string, bool) {
 		// only exists for a model whose CLI has a message bus; everything else
 		// is reachable by mailbox alone, which lands on the agent's next turn.
 		reach := "mailbox (next turn)"
-		if a.Address != "" {
-			reach = "bus " + a.Address
+		if addr := busAddress(cfg, a); addr != "" {
+			reach = "bus " + addr
 		}
 		pending := ""
 		if msgs, err := Mail(inst.Root, a.Name); err == nil && len(msgs) > 0 {
@@ -925,7 +981,48 @@ func handleAgents(args map[string]any) (string, bool) {
 		}
 		fmt.Fprintf(&b, "%s %-16s %-10s %s%s\n", marker, a.Name, a.Model, reach, pending)
 	}
+	b.WriteString("\n" + pmSection())
 	return b.String(), false
+}
+
+// pmSection ends every agents listing. PMs live in no tree's agents.yml, so
+// without it a tree agent looking for one by name finds nothing and goes
+// hunting for a CLI path its sandbox does not grant. The names come from the
+// published roster; an agent launched before there was one still gets the
+// address pattern.
+func pmSection() string {
+	const how = "message_agent reaches a PM by its agent name: `pm` is the top PM, `pm-<name>` any other.\n"
+	roster, err := ReadPMRoster()
+	if err != nil || len(roster) == 0 {
+		return "PMs (not readable here):\n  " + how
+	}
+	var b strings.Builder
+	b.WriteString("PMs:\n")
+	for _, p := range roster {
+		top := ""
+		if p.Top {
+			top = "  (top)"
+		}
+		fmt.Fprintf(&b, "  %-16s message_agent %s%s\n", p.Name, p.Agent, top)
+	}
+	b.WriteString("  " + how)
+	return b.String()
+}
+
+// busAddress is the bus name an agent can be reached at, or "" when there is
+// none to give. The address is recorded at registration, but the agent only
+// runs under it when its model passes a name at launch: a config saved before
+// agent_name_args existed launched every agent under a name of Claude's own
+// choosing, and an address reported for it was a name nothing answered to (#15).
+func busAddress(cfg *Config, a Agent) string {
+	if a.Address == "" || cfg == nil {
+		return ""
+	}
+	m, err := cfg.Model(a.Model)
+	if err != nil || len(m.AgentNameArgs) == 0 {
+		return ""
+	}
+	return a.Address
 }
 
 func handleMessageAgent(args map[string]any) (string, bool) {
@@ -958,16 +1055,17 @@ func handleMessageAgent(args map[string]any) (string, bool) {
 		if err := Deliver(inst.Root, to, from, text); err != nil {
 			return err.Error(), true
 		}
-		return "left for the PM; the watcher forwards it into the PM's request queue within a few seconds.", false
+		return fmt.Sprintf("left for %s in this tree's mailbox; the watcher moves it into that PM's `requests` on its next pass, every few seconds while the watcher runs.", to), false
 	}
 	if target == nil {
-		return fmt.Sprintf("no agent named %q in supatree %q — call `agents` to see them, or `start_agent` to launch one", to, inst.Name), true
+		return fmt.Sprintf("no agent named %q in supatree %q — call `agents` to see them, or `start_agent` to launch one; a PM is addressed as `pm` or `pm-<name>`", to, inst.Name), true
 	}
 	if err := Deliver(inst.Root, to, from, text); err != nil {
 		return err.Error(), true
 	}
-	if target.Address != "" {
-		return fmt.Sprintf("delivered to %s's mailbox. It is idle until its next turn — to reach it now, message %s on your session bus.", to, target.Address), false
+	cfg, _ := Load()
+	if addr := busAddress(cfg, *target); addr != "" {
+		return fmt.Sprintf("delivered to %s's mailbox. It is idle until its next turn — to reach it now, message %s on your session bus.", to, addr), false
 	}
 	return fmt.Sprintf("delivered to %s's mailbox; it will see this on its next turn.", to), false
 }
@@ -1014,6 +1112,7 @@ var pmTools = map[string]bool{
 	"new_tree":    true,
 	"start_agent": true,
 	"remove_tree": true,
+	"stop_agent":  true,
 	"history":     true,
 	"stack_add":   true,
 	"stack_rm":    true,
@@ -1032,6 +1131,7 @@ var recallTools = map[string]bool{
 // dualTools act on one supatree but can be told which, so they serve an agent
 // inside a tree and the PM outside every tree alike.
 var dualTools = map[string]bool{
+	"review_add":    true,
 	"agents":        true,
 	"message_agent": true,
 	"inbox":         true,
@@ -1328,11 +1428,43 @@ func startAgent(inst *Instance, agent, brief string) (string, error) {
 		return "", fmt.Errorf("nothing for %s to do: pass a brief", agent)
 	}
 	req := LaunchRequest{Tree: inst.Name, Agent: agent, Session: os.Getenv("ZELLIJ_SESSION_NAME"), From: currentPMAgentID()}
-	if err := QueueLaunch(req); err != nil {
+	id, err := QueueLaunch(req)
+	if err != nil {
 		return "", fmt.Errorf("queue launch: %w", err)
 	}
-	return fmt.Sprintf("briefed %s and queued it to start in tab %q. The watcher opens it in the background within a few seconds and returns focus to wherever the human was; if nothing appears, `supatree watch` is not running. The agent reports back with message_agent, which reaches you through `requests`.",
-		agent, TabName(inst.Name, agent)), nil
+	// Wait for the watcher's answer: "queued" covered three different
+	// outcomes, and one of them — an idle agent mailed and never woken — looked
+	// exactly like success (#15).
+	res, ok := WaitLaunchResult(id, launchWait)
+	return launchReport(inst, agent, res, ok), nil
+}
+
+// launchWait is how long start_agent waits to hear what the watcher did. The
+// watcher looks every two seconds; a launch past this is still queued.
+var launchWait = 20 * time.Second
+
+func launchReport(inst *Instance, agent string, res LaunchResult, answered bool) string {
+	tab := TabName(inst.Name, agent)
+	const back = " The agent reports back with message_agent, which reaches you through `requests`."
+	if !answered {
+		waiting := ""
+		if n := QueuedLaunches(); n > 0 {
+			waiting = fmt.Sprintf(" %d launch(es) are queued — the watcher holds them while too many agents are busy, and starts each as a slot frees.", n)
+		}
+		return fmt.Sprintf("briefed %s and queued it to start in tab %q, but the watcher has not picked it up yet.%s If it never starts, `supatree watch` is not running.%s",
+			agent, tab, waiting, back)
+	}
+	switch res.Outcome {
+	case LaunchStarted:
+		return fmt.Sprintf("briefed %s and started it in tab %q, in the background (focus stays where the human was).%s", agent, tab, back)
+	case LaunchWoken:
+		return fmt.Sprintf("briefed %s; it was already running, so it was woken in place to read the brief now.%s", agent, back)
+	case LaunchRunning:
+		return fmt.Sprintf("briefed %s, but it is already running and could not be woken (no agent pane to type into), so it reads the brief on its next turn. If it stays idle, check `agents` for unread mail and message its bus address.", agent)
+	case LaunchFailed:
+		return fmt.Sprintf("briefed %s, but the launch failed: %s. The brief is still in its mailbox; call start_agent again once that is fixed.", agent, res.Detail)
+	}
+	return fmt.Sprintf("briefed %s; the watcher answered %q.%s", agent, res.Outcome, back)
 }
 
 func handleRemoveTree(args map[string]any) (string, bool) {
@@ -1353,14 +1485,54 @@ func handleRemoveTree(args map[string]any) (string, bool) {
 		cache := github.NewCache(PRCachePath())
 		_ = cache.Load()
 		sum := Status([]*Instance{inst}, cache, StatusOptions{})
-		if len(sum.Trees) > 0 && sum.Trees[0].State != TreeDone {
-			return fmt.Sprintf("%s is %s, not done — removing it would throw away unmerged work. Pass force only if the human asked.",
-				inst.Name, sum.Trees[0].State), true
+		if len(sum.Trees) > 0 {
+			if msg := removeRefusal(sum.Trees[0]); msg != "" {
+				return msg, true
+			}
 		}
 	}
 	// The watcher removes it: the worktrees and branches being deleted are
 	// outside the PM's sandbox, and only the watcher can close the tree's tabs.
 	return opReply(RequestOp(PMDir(), Op{Kind: OpRemove, Tree: inst.Name, Force: force}, opTimeout))
+}
+
+func handleStopAgent(args map[string]any) (string, bool) {
+	tree, _ := args[argTree].(string)
+	agent, _ := args["agent"].(string)
+	orphans, _ := args["orphans"].(bool)
+	if tree == "" && !orphans {
+		return "name a tree, or pass orphans", true
+	}
+	cfg, err := Load()
+	if err != nil {
+		return err.Error(), true
+	}
+	var meta *Meta
+	if tree != "" {
+		inst, err := Get(cfg, tree)
+		if err != nil {
+			return err.Error(), true
+		}
+		if meta, err = LoadMeta(inst.Root); err != nil {
+			return err.Error(), true
+		}
+	}
+	if p := cfg.Resolve(meta).AsAsked(argAsked(args)); !p.AllowsMutation() {
+		return p.Deny("stopping agents"), true
+	}
+	// The watcher does it: no sandbox may signal another process.
+	return opReply(RequestOp(PMDir(), Op{Kind: OpStop, Tree: tree, Agent: agent, Orphans: orphans}, opTimeout))
+}
+
+// removeRefusal is why remove_tree refuses t without force, or "" when t is
+// reapable. A review tree finishes as reviewed, not done, and holds no work of
+// our own (authoring is refused there), so it is as removable as a done tree.
+func removeRefusal(t TreeStatus) string {
+	if t.Reap() {
+		return ""
+	}
+	return fmt.Sprintf("%s is %s, not done or reviewed — removing it would throw away unfinished work. Pass force only if the human asked.",
+		t.Name, t.State)
 }
 
 func handleHistory(args map[string]any) (string, bool) {
@@ -1671,18 +1843,39 @@ func splitList(s string) []string {
 
 // stackEdit gates a stack edit on mutation autonomy — a stack is shared, and a
 // change to it reaches every tree made from it afterwards — and runs it.
-func stackEdit(args map[string]any, action string, edit func(*Config) error) (string, bool) {
+// stackEdit gates a stack edit on autonomy and carries it out: through the
+// watcher, which publishes it, when a human has pinned the stack's origin;
+// otherwise here, in the PM's own sandbox, as a local commit that says it went
+// no further.
+func stackEdit(args map[string]any, op Op) (string, bool) {
 	cfg, err := Load()
 	if err != nil {
 		return err.Error(), true
 	}
 	if p := cfg.Resolve(nil).AsAsked(argAsked(args)); !p.AllowsMutation() {
-		return p.Deny(action), true
+		return p.Deny("changing a stack"), true
 	}
-	if err := edit(cfg); err != nil {
+	stack := cfg.FindStack(op.Stack)
+	if stack == nil {
+		return fmt.Sprintf("stack %q not found", op.Stack), true
+	}
+	if stack.Origin != "" {
+		op.Kind = OpStack
+		return opReply(RequestOp(PMDir(), op, opTimeout))
+	}
+	var res StackEditResult
+	switch op.Action {
+	case StackActionAdd:
+		res, err = cfg.StackAdd(op.Stack, op.Alias, op.URL, false, InSandbox)
+	case StackActionRm:
+		res, err = cfg.StackRm(op.Stack, op.Alias, InSandbox)
+	case StackActionDep:
+		res, err = cfg.StackDep(op.Stack, op.Alias, op.DependsOn, InSandbox)
+	}
+	if err != nil {
 		return err.Error(), true
 	}
-	return "", false
+	return res.Summary(), !res.Live()
 }
 
 func handleStackAdd(args map[string]any) (string, bool) {
@@ -1696,35 +1889,18 @@ func handleStackAdd(args map[string]any) (string, bool) {
 	if err != nil {
 		return err.Error(), true
 	}
-	// No clone here: the repo cache is outside the PM's sandbox. The watcher
-	// clones it when a tree first needs it.
-	if out, isErr := stackEdit(args, "changing a stack", func(c *Config) error {
-		return c.StackAdd(stack, alias, url, false)
-	}); isErr {
-		return out, true
-	}
-	return fmt.Sprintf("added %s (%s) to %s. Trees get it on their next sync.", alias, url, stack), false
+	return stackEdit(args, Op{Stack: stack, Action: StackActionAdd, Alias: alias, URL: url})
 }
 
 func handleStackRm(args map[string]any) (string, bool) {
 	stack, _ := args[argStack].(string)
 	alias, _ := args["alias"].(string)
-	if out, isErr := stackEdit(args, "changing a stack", func(c *Config) error {
-		return c.StackRm(stack, alias)
-	}); isErr {
-		return out, true
-	}
-	return fmt.Sprintf("removed %s from %s. Trees that have it keep it until synced with prune.", alias, stack), false
+	return stackEdit(args, Op{Stack: stack, Action: StackActionRm, Alias: alias})
 }
 
 func handleStackDep(args map[string]any) (string, bool) {
 	stack, _ := args[argStack].(string)
 	from, _ := args["from"].(string)
 	to, _ := args["to"].(string)
-	if out, isErr := stackEdit(args, "changing a stack", func(c *Config) error {
-		return c.StackDep(stack, from, to)
-	}); isErr {
-		return out, true
-	}
-	return fmt.Sprintf("%s now depends on %s in %s.", from, to, stack), false
+	return stackEdit(args, Op{Stack: stack, Action: StackActionDep, Alias: from, DependsOn: to})
 }

@@ -22,7 +22,7 @@ func TestMailDeliverAndDrain(t *testing.T) {
 	if err := Deliver(root, "main", "pm", "look at #412"); err != nil {
 		t.Fatalf("Deliver: %v", err)
 	}
-	if err := Deliver(root, "main", "reviewer", "and rebase first"); err != nil {
+	if err := Deliver(root, "main", agentReviewer, "and rebase first"); err != nil {
 		t.Fatalf("Deliver: %v", err)
 	}
 	if n := MailboxCount(root, "main"); n != 2 {
@@ -40,7 +40,7 @@ func TestMailDeliverAndDrain(t *testing.T) {
 	if len(msgs) != 2 {
 		t.Fatalf("Drain returned %d messages, want 2", len(msgs))
 	}
-	if msgs[0].From != "pm" || msgs[1].From != "reviewer" {
+	if msgs[0].From != "pm" || msgs[1].From != agentReviewer {
 		t.Errorf("order = %q, %q; want oldest first (pm, reviewer)", msgs[0].From, msgs[1].From)
 	}
 	if msgs[0].Text != "look at #412" {
@@ -61,13 +61,13 @@ func TestMailIsPerAgent(t *testing.T) {
 	if err := Deliver(root, "main", "pm", "for main"); err != nil {
 		t.Fatalf("Deliver: %v", err)
 	}
-	if err := Deliver(root, "reviewer", "pm", "for reviewer"); err != nil {
+	if err := Deliver(root, agentReviewer, "pm", "for reviewer"); err != nil {
 		t.Fatalf("Deliver: %v", err)
 	}
 	if _, err := Drain(root, "main"); err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
-	msgs, err := Mail(root, "reviewer")
+	msgs, err := Mail(root, agentReviewer)
 	if err != nil || len(msgs) != 1 || msgs[0].Text != "for reviewer" {
 		t.Fatalf("reviewer's mailbox = %v, %v; want its own single message", msgs, err)
 	}

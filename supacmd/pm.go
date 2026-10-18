@@ -1,7 +1,11 @@
 package supacmd
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -34,10 +38,9 @@ var pmCmd = &cobra.Command{
 		if len(args) > 0 {
 			name = args[0]
 		}
-		// Singleton per PM by tab name, not by file lock: OpenOrFocusTab focuses
-		// the live tab rather than opening a second one, and the PM tab names are
-		// reserved so no supatree can collide with them. A lock would be theatre
-		// — nothing in this process stays alive to hold one on the agent's behalf.
+		// One process per PM: OpenPM opens under a per-tab lock and checks the
+		// process registry, so a retry while the first open is still working
+		// finds its tab instead of starting a second PM (#1).
 		_, err := supatree.OpenPM(stCfg, supatreeWorkspace(), stCfg.ResolveSidebarWidth(), name)
 		return err
 	},
@@ -88,7 +91,24 @@ var pmLsCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		pms, err := supatree.LoadPMs()
 		if err != nil {
-			return err
+			// Inside a tree's sandbox the registry is out of reach, but the
+			// roster published from it is not. Any other failure is a broken
+			// registry, which a roster copied from it would only hide.
+			if !errors.Is(err, fs.ErrPermission) {
+				return err
+			}
+			roster, rerr := supatree.ReadPMRoster()
+			if rerr != nil {
+				return err
+			}
+			for _, p := range roster {
+				top := ""
+				if p.Top {
+					top = "  (top)"
+				}
+				fmt.Printf("%-16s %s%s\n", p.Name, p.Agent, top)
+			}
+			return nil
 		}
 		for i, p := range pms {
 			top := ""
@@ -99,11 +119,85 @@ var pmLsCmd = &cobra.Command{
 			if reqs, _, err := supatree.PendingRequests(p.Name); err == nil && len(reqs) > 0 {
 				pending = fmt.Sprintf("  ✉%d", len(reqs))
 			}
-			fmt.Printf("%-16s %-12s %s%s%s\n", p.Name, p.AgentID(), p.Tab(), pending, top)
+			stale := ""
+			if stCfg.PMConfig != "" && p.ConfigAt != "" {
+				if head := supatree.PMConfigHead(stCfg.PMConfig); head != "" && head != p.ConfigAt {
+					stale = "  (config changed since launch — reopen to pick it up)"
+				}
+			}
+			fmt.Printf("%-16s %-12s %s%s%s%s\n", p.Name, p.AgentID(), p.Tab(), pending, top, stale)
 		}
 		return nil
 	},
 }
+
+var pmConfigCmd = &cobra.Command{
+	Use:   "config [<path> | <git-url>]",
+	Short: "Set the PM config repo: versioned instructions, skills and settings for the PMs",
+	Long: "The PM config repo is a git repository you own that shapes how the PMs\n" +
+		"behave, kept apart from their runtime state:\n\n" +
+		"  AGENTS.md                 appended to every PM's instructions\n" +
+		"  .claude/                  skills, commands, settings.json — linked into the PMs' home\n" +
+		"  pms/<name>/AGENTS.md      instructions for that PM alone\n" +
+		"  pms/<name>/settings.json  Claude settings for that PM alone\n\n" +
+		"PMs read it and cannot write it. A git URL is cloned to ~/supatree/pm-config.\n" +
+		"Changes are picked up when a PM is next opened; `supatree pm ls` shows which\n" +
+		"PMs are running an older commit. With no argument, prints the current repo.\n\n" +
+		"--init creates one at ~/supatree/pm-config — a README describing the layout\n" +
+		"and an empty pms/, committed — and registers it. It changes nothing about how\n" +
+		"the PMs behave until you commit instructions, skills or settings to it.",
+	Args: cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if pmConfigInit {
+			if len(args) > 0 {
+				return fmt.Errorf("--init always creates %s; to use another repo, pass its path without --init", supatree.DefaultPMConfigPath())
+			}
+			if stCfg.PMConfig != "" {
+				return fmt.Errorf("a PM config repo is already registered: %s", stCfg.PMConfig)
+			}
+			dir, err := supatree.InitPMConfig()
+			if err != nil {
+				return err
+			}
+			fmt.Printf("created and registered PM config repo: %s\n"+
+				"Commit AGENTS.md, .claude/ or pms/<name>/ there (see its README), then reopen a PM.\n"+
+				"To keep it elsewhere: git -C %s remote add origin <url> && git -C %s push -u origin main\n", dir, dir, dir)
+			return nil
+		}
+		if len(args) == 0 {
+			if stCfg.PMConfig == "" {
+				fmt.Println("no PM config repo — set one with: supatree pm config <path | git-url>")
+				return nil
+			}
+			fmt.Printf("%s%s\n", stCfg.PMConfig, func() string {
+				if h := supatree.PMConfigHead(stCfg.PMConfig); h != "" {
+					return " @ " + h[:8]
+				}
+				return ""
+			}())
+			return nil
+		}
+		dir := args[0]
+		if _, err := os.Stat(dir); err != nil {
+			dir = supatree.DefaultPMConfigPath()
+			if _, err := os.Stat(dir); err == nil {
+				return fmt.Errorf("%s already exists — pass it as a path, or move it aside to clone %s", dir, args[0])
+			}
+			clone := exec.CommandContext(cmd.Context(), "git", "clone", "-q", "--", args[0], dir)
+			clone.Stdout, clone.Stderr = os.Stdout, os.Stderr
+			if err := clone.Run(); err != nil {
+				return fmt.Errorf("clone %s: %w", args[0], err)
+			}
+		}
+		if err := supatree.SetPMConfig(dir); err != nil {
+			return err
+		}
+		fmt.Printf("PM config repo: %s\nOpen (or reopen) a PM to pick it up.\n", dir)
+		return nil
+	},
+}
+
+var pmConfigInit bool
 
 var pmRequestFrom string
 
@@ -139,7 +233,8 @@ var (
 
 func init() {
 	pmNewCmd.Flags().StringVar(&pmNewModel, "model", "", "model entry to run this PM under (default: the PM model)")
-	pmCmd.AddCommand(pmNewCmd, pmRmCmd, pmLsCmd)
+	pmConfigCmd.Flags().BoolVar(&pmConfigInit, "init", false, "create a PM config repo at ~/supatree/pm-config and register it")
+	pmCmd.AddCommand(pmNewCmd, pmRmCmd, pmLsCmd, pmConfigCmd)
 	requestCmd.Flags().StringVar(&pmRequestTo, "to", "", "PM the request is for (default: the top PM)")
 	requestCmd.Flags().StringVar(&pmRequestFrom, "from", "cli", "who is asking")
 	requestCmd.Flags().StringVar(&pmRequestTree, "tree", "", "supatree the request concerns")

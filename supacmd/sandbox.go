@@ -26,11 +26,7 @@ var sandboxArgsCmd = &cobra.Command{
 			if model, err = stCfg.Model(stCfg.PMModel()); err != nil {
 				return err
 			}
-			insts, err := supatree.List(stCfg)
-			if err != nil {
-				return err
-			}
-			g = supatree.PMGrants(stCfg, insts)
+			g = supatree.PMGrants(stCfg)
 		} else {
 			if err != nil {
 				return err
