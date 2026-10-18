@@ -29,7 +29,7 @@ func bindEarlierCodexSessions(c *Config, root, name string) error {
 			return err
 		}
 		if !sandbox.SessionExistsFor(model, root, bound.SessionID) {
-			return fmt.Errorf("Codex agent %q has not written its session yet; retry after it starts or remove the failed agent", other.Name)
+			return fmt.Errorf("codex agent %q has not written its session yet; retry after it starts or remove the failed agent", other.Name)
 		}
 	}
 	return nil
