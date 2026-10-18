@@ -66,7 +66,7 @@ func (m *pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for i := range m.aliases {
 			m.checked[i] = all
 		}
-	case "enter":
+	case keyEnter:
 		return m, tea.Quit
 	}
 	return m, nil

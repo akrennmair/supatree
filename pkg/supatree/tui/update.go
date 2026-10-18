@@ -16,6 +16,9 @@ import (
 	"github.com/panamafrancis/workbench/pkg/zellij"
 )
 
+// keyEnter is the confirm key every mode and picker shares.
+const keyEnter = "enter"
+
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -241,7 +244,7 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.setCollapse(r.tree, false)
 			}
 		}
-	case "enter", "o":
+	case keyEnter, "o":
 		// On the repositories header "open" means open the section, since it is
 		// neither a place to stand in nor a process to focus.
 		if r := m.selected(); r != nil && r.kind == rowRepos {
@@ -380,7 +383,7 @@ func (m *Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.inputErr = nil
 		m.input.Blur()
 		return m, nil
-	case "enter":
+	case keyEnter:
 		val := m.input.Value()
 		switch m.mode {
 		case modeNewAgent:
@@ -502,7 +505,7 @@ func (m *Model) updateStackPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.stackCursor < len(m.stCfg.Stacks)-1 {
 			m.stackCursor++
 		}
-	case "enter":
+	case keyEnter:
 		m.actionStack = m.stCfg.Stacks[m.stackCursor].Alias
 		m.mode = modeNewTreeName
 		m.input.SetValue("")
@@ -612,7 +615,7 @@ func (m *Model) updateModelPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		step(-1)
 	case "down", "j":
 		step(1)
-	case "enter":
+	case keyEnter:
 		m.mode = modeNormal
 		return m, m.openAgentOn(m.actionTree, m.actionAgent, m.models[m.modelCursor].key)
 	}
