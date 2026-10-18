@@ -115,12 +115,11 @@ func openRootAgentLocked(inst *Instance, c *Config, ws zellij.Workspace, sidebar
 		return LaunchFailed, err
 	}
 	resume := sandbox.SessionExistsFor(model, inst.Root, agent.SessionID)
-	if !resume && sandbox.PicksOwnSessionID(model) {
-		// The session this launch starts is found later by its start time.
-		if err := updateAgent(inst.Root, agentName, func(r *Agent) { r.LaunchedAt = time.Now() }); err != nil {
-			return LaunchFailed, err
-		}
-	}
+	// The session a fresh launch starts is found later by its start time, so
+	// the time is taken now and recorded only once a launch really happened:
+	// recorded on a mere focus, it would move past the running session's
+	// start and that session could never be found.
+	launchedAt := time.Now()
 	if err := NonoPreflight(model.NonoProfile); err != nil {
 		return LaunchFailed, err
 	}
@@ -138,6 +137,13 @@ func openRootAgentLocked(inst *Instance, c *Config, ws zellij.Workspace, sidebar
 		return LaunchFailed, &LaunchError{Err: err}
 	}
 	if action != zellij.TabFocused {
+		if !resume && sandbox.PicksOwnSessionID(model) {
+			if err := updateAgent(inst.Root, agentName, func(r *Agent) { r.LaunchedAt = launchedAt }); err != nil {
+				// The agent is running: its record must stay (LaunchError keeps
+				// it), even though its session can now not be found.
+				return LaunchStarted, &LaunchError{Err: fmt.Errorf("agent started, but its launch time was not recorded, so its session will not resume: %w", err)}
+			}
+		}
 		return LaunchStarted, nil
 	}
 	// Focused: the agent was running after all (its liveness was unknown

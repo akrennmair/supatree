@@ -1,6 +1,8 @@
 package supatree
 
 import (
+	"time"
+
 	"github.com/panamafrancis/workbench/pkg/config"
 	"github.com/panamafrancis/workbench/pkg/sandbox"
 )
@@ -23,13 +25,24 @@ func discoverSession(root string, a Agent, m config.Model) (string, bool) {
 	if err != nil {
 		return "", false
 	}
+	// Siblings' recorded sessions are theirs. And a session that started
+	// after a sibling's later launch is more likely that launch's: without
+	// the bound, an agent whose own session never appeared (quit before its
+	// first turn) would take the next sibling's.
 	claimed := map[string]bool{}
+	var until time.Time
 	for _, o := range agents {
-		if o.Name != a.Name && o.SessionID != "" {
+		if o.Name == a.Name {
+			continue
+		}
+		if o.SessionID != "" {
 			claimed[o.SessionID] = true
 		}
+		if o.LaunchedAt.After(a.LaunchedAt) && (until.IsZero() || o.LaunchedAt.Before(until)) {
+			until = o.LaunchedAt
+		}
 	}
-	return sandbox.DiscoverSession(m, root, a.LaunchedAt, claimed)
+	return sandbox.DiscoverSession(m, root, a.LaunchedAt, until, claimed)
 }
 
 // bindSession records the session a's last fresh launch started, when it

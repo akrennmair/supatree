@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -90,5 +91,56 @@ func TestBindSessionLearnsCodexSessions(t *testing.T) {
 	agents, _ = LoadAgents(root)
 	if got := FindAgent(agents, MainAgent).SessionID; got != sidMain {
 		t.Errorf("agents.yml has %q for main, want %q", got, sidMain)
+	}
+}
+
+// An agent whose own session never appeared does not take the session a
+// sibling launched after it started.
+func TestBindSessionLeavesLaterSiblingsSession(t *testing.T) {
+	home := testutil.IsolateHome(t)
+	t.Setenv("CODEX_HOME", filepath.Join(home, "codex"))
+	root := t.TempDir()
+	m, _ := codexConfig().Model("codex")
+	second := time.Now().Add(-time.Minute)
+	first := second.Add(-time.Minute)
+	for name, at := range map[string]time.Time{"early": first, "late": second} {
+		if _, _, err := EnsureAgent(root, "t", name, "codex", at); err != nil {
+			t.Fatal(err)
+		}
+		if err := updateAgent(root, name, func(a *Agent) { a.LaunchedAt = at }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const sidLate = "0199a1b2-c3d4-7e5f-8a9b-000000000003"
+	writeCodexRollout(t, sidLate, root, second.Add(time.Second))
+
+	agents, _ := LoadAgents(root)
+	if early, _ := bindSession(root, *FindAgent(agents, "early"), m); early.SessionID == sidLate {
+		t.Error("early agent took the session its later sibling started")
+	}
+	if late, _ := bindSession(root, *FindAgent(agents, "late"), m); late.SessionID != sidLate {
+		t.Errorf("late agent bound %q, want %q", late.SessionID, sidLate)
+	}
+}
+
+// Agents registered concurrently in one tree are all kept: agents.yml is
+// read-modify-written under a lock.
+func TestEnsureAgentConcurrent(t *testing.T) {
+	testutil.IsolateHome(t)
+	root := t.TempDir()
+	const n = 12
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, _, err := EnsureAgent(root, "t", fmt.Sprintf("a%d", i), "claude", time.Now()); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	if agents, _ := LoadAgents(root); len(agents) != n {
+		t.Errorf("%d agents recorded, want %d", len(agents), n)
 	}
 }
