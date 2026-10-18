@@ -348,13 +348,20 @@ models:
 3. **Register supatree's MCP server with Codex, forwarding supatree's
    environment.** The tools find their tree and agent from `SUPATREE_*`
    variables that supatree sets at launch, but Codex starts MCP servers with
-   only a minimal environment. List them in `env_vars`, or every tree tool
-   answers "Not inside a supatree session":
+   only a minimal environment. Register the server:
+
+   ```sh
+   codex mcp add supatree -- "$(which supatree)" mcp
+   ```
+
+   then add `env_vars` to the entry it wrote in `~/.codex/config.toml`
+   (`codex mcp add` has no option for it: `--env` only sets fixed values).
+   Without it every tree tool answers "Not inside a supatree session":
 
    ```toml
    # ~/.codex/config.toml
    [mcp_servers.supatree]
-   command = "/path/to/supatree"   # `which supatree`
+   command = "/path/to/supatree"   # written by codex mcp add
    args = ["mcp"]
    env_vars = ["SUPATREE", "SUPATREE_NAME", "SUPATREE_ROOT", "SUPATREE_MEMBERS",
                "SUPATREE_BRANCH_SLUG", "SUPATREE_AGENT", "SUPATREE_MODE",
