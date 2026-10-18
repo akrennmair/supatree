@@ -54,9 +54,14 @@ func OpenRootAgent(inst *Instance, c *Config, ws zellij.Workspace, sidebarWidth,
 		return LaunchFailed, err
 	}
 	tab := TabName(inst.Name, agentName)
-	lockErr := config.WithFileLock(openLockPath(tab), func() error {
-		outcome, err = openRootAgentLocked(inst, c, ws, sidebarWidth, agentName, tab, opts, startupW)
-		return nil
+	// Codex chooses its session ID after launch. Serialize opens within one
+	// tree so a second agent cannot launch before the first has recorded its
+	// start time and the pending-session check below can see it.
+	lockErr := config.WithFileLock(openLockPath("\x00"+inst.Name), func() error {
+		return config.WithFileLock(openLockPath(tab), func() error {
+			outcome, err = openRootAgentLocked(inst, c, ws, sidebarWidth, agentName, tab, opts, startupW)
+			return nil
+		})
 	})
 	if lockErr != nil {
 		return LaunchFailed, lockErr
@@ -118,6 +123,11 @@ func openRootAgentLocked(inst *Instance, c *Config, ws zellij.Workspace, sidebar
 		return LaunchFailed, err
 	}
 	resume := sandbox.SessionExistsFor(model, inst.Root, agent.SessionID)
+	if !resume && sandbox.PicksOwnSessionID(model) {
+		if err := bindEarlierCodexSessions(c, inst.Root, agentName); err != nil {
+			return LaunchFailed, err
+		}
+	}
 	// The session a fresh launch starts is found later by its start time, so
 	// the time is taken now and recorded only once a launch really happened:
 	// recorded on a mere focus, it would move past the running session's

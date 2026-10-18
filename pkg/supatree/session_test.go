@@ -168,6 +168,38 @@ func TestMainAgentRejectsModelOverrideBeforeRegistration(t *testing.T) {
 	}
 }
 
+func TestCodexLaunchWaitsForEarlierSession(t *testing.T) {
+	home := testutil.IsolateHome(t)
+	t.Setenv("CODEX_HOME", filepath.Join(home, "codex"))
+	root := t.TempDir()
+	cfg := codexConfig()
+	firstLaunch := time.Now().Add(-time.Minute)
+	for _, name := range []string{"first", "second"} {
+		if _, _, err := EnsureAgent(root, "t", name, "codex", firstLaunch); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := updateAgent(root, "first", func(a *Agent) { a.LaunchedAt = firstLaunch }); err != nil {
+		t.Fatal(err)
+	}
+	if err := bindEarlierCodexSessions(cfg, root, "second"); err == nil {
+		t.Fatal("second launch was allowed before first wrote a session")
+	}
+	const sidFirst = "0199a1b2-c3d4-7e5f-8a9b-000000000005"
+	writeCodexRollout(t, sidFirst, root, firstLaunch.Add(time.Second))
+	if err := bindEarlierCodexSessions(cfg, root, "second"); err != nil {
+		t.Fatalf("second launch stayed blocked after first wrote a session: %v", err)
+	}
+	agents, err := LoadAgents(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := FindAgent(agents, "first")
+	if first.SessionID != sidFirst || !first.LaunchedAt.IsZero() {
+		t.Errorf("first not bound before second launch: %+v", first)
+	}
+}
+
 // Agents registered concurrently in one tree are all kept: agents.yml is
 // read-modify-written under a lock.
 func TestEnsureAgentConcurrent(t *testing.T) {

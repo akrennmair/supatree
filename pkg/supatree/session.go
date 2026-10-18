@@ -1,11 +1,39 @@
 package supatree
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/panamafrancis/workbench/pkg/config"
 	"github.com/panamafrancis/workbench/pkg/sandbox"
 )
+
+// bindEarlierCodexSessions prevents a new Codex launch from overlapping an
+// earlier one whose session ID is still unknown. The caller holds the tree's
+// open lock, so another open cannot slip between this check and the launch.
+func bindEarlierCodexSessions(c *Config, root, name string) error {
+	agents, err := LoadAgents(root)
+	if err != nil {
+		return err
+	}
+	for _, other := range agents {
+		if other.Name == name || other.LaunchedAt.IsZero() {
+			continue
+		}
+		model, err := c.Model(other.Model)
+		if err != nil || !sandbox.PicksOwnSessionID(model) || sandbox.SessionExistsFor(model, root, other.SessionID) {
+			continue
+		}
+		bound, err := bindSession(root, other, model)
+		if err != nil {
+			return err
+		}
+		if !sandbox.SessionExistsFor(model, root, bound.SessionID) {
+			return fmt.Errorf("Codex agent %q has not written its session yet; retry after it starts or remove the failed agent", other.Name)
+		}
+	}
+	return nil
+}
 
 // A CLI that picks its own session ID (codex) cannot be launched under the ID
 // supatree registered for an agent. Its session is found after the fact
@@ -52,10 +80,14 @@ func bindSession(root string, a Agent, m config.Model) (Agent, error) {
 	if !ok {
 		return a, nil
 	}
-	if err := updateAgent(root, a.Name, func(r *Agent) { r.SessionID = sid }); err != nil {
+	if err := updateAgent(root, a.Name, func(r *Agent) {
+		r.SessionID = sid
+		r.LaunchedAt = time.Time{}
+	}); err != nil {
 		return a, err
 	}
 	a.SessionID = sid
+	a.LaunchedAt = time.Time{}
 	return a, nil
 }
 

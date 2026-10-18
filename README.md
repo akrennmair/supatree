@@ -293,8 +293,10 @@ with `session_store: codex` is launched fresh, and supatree then finds the
 session that started in the tree root after that launch (the earliest one no
 other agent owns) and records its ID. Later opens resume it with
 `resume_session_args` (`["resume", "{session_id}"]`), so several Codex agents
-can share a tree. Two Codex agents launched into one tree within seconds of
-each other may each be given the other's session.
+can share a tree. Fresh Codex launches in one tree are serialized: a second
+agent is refused until the first has written a session record that can be
+bound to it. If the first agent never writes one, retry after it starts or
+remove that failed agent before launching another.
 
 ```yaml
 # ~/.config/supatree/config.yml
