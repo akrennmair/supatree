@@ -3,7 +3,9 @@ package supatree
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -162,6 +164,29 @@ func (c *Config) Model(key string) (config.Model, error) {
 		return config.Model{}, fmt.Errorf("unknown model %q (add it under 'models:' in %s)", key, ConfigPath())
 	}
 	return m, nil
+}
+
+// ModelKeys lists the configured models, sorted, for a caller offering a
+// choice of them.
+func (c *Config) ModelKeys() []string {
+	keys := make([]string, 0, len(c.models()))
+	for k := range c.models() {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// ModelInstalled reports whether key names a model whose binary is on PATH,
+// which a launch needs: nono runs it by name, and fails inside the agent's
+// tab when it is missing.
+func (c *Config) ModelInstalled(key string) bool {
+	m, err := c.Model(key)
+	if err != nil {
+		return false
+	}
+	_, err = exec.LookPath(m.Binary)
+	return err == nil
 }
 
 // models is the effective model map: supatree's own, else the built-in

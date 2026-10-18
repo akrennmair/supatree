@@ -9,6 +9,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/panamafrancis/workbench/pkg/config"
 	"github.com/panamafrancis/workbench/pkg/git"
 	"github.com/panamafrancis/workbench/pkg/zellij"
 )
@@ -25,6 +26,11 @@ type Agent struct {
 	// agent was launched still reports the name that agent is actually running
 	// under — the launched process cannot be renamed.
 	Address string `yaml:"address,omitempty"`
+	// LaunchedAt is when the agent was last launched into a fresh session by
+	// a CLI that picks its own session ID (sandbox.PicksOwnSessionID). Until
+	// that session is found and its ID recorded (bindSession), SessionID is a
+	// placeholder nothing was launched under.
+	LaunchedAt time.Time `yaml:"launched_at,omitempty"`
 }
 
 type agentsFile struct {
@@ -64,6 +70,53 @@ func saveAgents(root string, agents []Agent) error {
 	return os.Rename(tmp, path)
 }
 
+// checkAgentModel refuses a model asked for an agent that is already
+// registered on another: its session belongs to that CLI, so the request
+// could only be honoured by silently dropping it. An empty model asks for
+// nothing.
+func checkAgentModel(a Agent, model string) error {
+	if model == "" || model == a.Model {
+		return nil
+	}
+	return fmt.Errorf("agent %q already runs on %s, not %s — pick a new agent name to use %s", a.Name, a.Model, model, model)
+}
+
+// checkMainModel keeps the main agent on the model recorded for its tree,
+// including when main has not yet been registered in agents.yml.
+func checkMainModel(agent, requested, treeModel string) error {
+	if agent == MainAgent && requested != "" && requested != treeModel {
+		return fmt.Errorf("main agent runs on the tree's model %q, not %q", treeModel, requested)
+	}
+	return nil
+}
+
+// withAgentsLock runs fn holding the tree's agents.yml lock. Every
+// read-modify-write of agents.yml goes through it: the watcher, the sidebars
+// and the PM open agents of one tree concurrently, each under only its own
+// tab's lock, and an unlocked write drops whatever another made in between.
+func withAgentsLock(root string, fn func() error) error {
+	if err := os.MkdirAll(StateDir(root), 0755); err != nil {
+		return fmt.Errorf("create state dir: %w", err)
+	}
+	return config.WithFileLock(AgentsPath(root)+".lock", fn)
+}
+
+// updateAgent applies fn to the named agent's record and saves it.
+func updateAgent(root, name string, fn func(*Agent)) error {
+	return withAgentsLock(root, func() error {
+		agents, err := LoadAgents(root)
+		if err != nil {
+			return err
+		}
+		a := FindAgent(agents, name)
+		if a == nil {
+			return fmt.Errorf("no agent named %q", name)
+		}
+		fn(a)
+		return saveAgents(root, agents)
+	})
+}
+
 // FindAgent returns the agent with the given name, or nil.
 func FindAgent(agents []Agent, name string) *Agent {
 	for i := range agents {
@@ -84,23 +137,31 @@ func EnsureAgent(root, tree, name, model string, now time.Time) (Agent, bool, er
 	if err := git.ValidateName(name, nil); err != nil {
 		return Agent{}, false, fmt.Errorf("invalid agent name %q: %w", name, err)
 	}
-	agents, err := LoadAgents(root)
+	var (
+		out     Agent
+		created bool
+	)
+	err := withAgentsLock(root, func() error {
+		agents, err := LoadAgents(root)
+		if err != nil {
+			return err
+		}
+		if a := FindAgent(agents, name); a != nil {
+			out = *a
+			return nil
+		}
+		sid, err := newSessionID()
+		if err != nil {
+			return err
+		}
+		out = Agent{Name: name, Model: model, SessionID: sid, CreatedAt: now, Address: AgentAddress(tree, name)}
+		created = true
+		return saveAgents(root, append(agents, out))
+	})
 	if err != nil {
 		return Agent{}, false, err
 	}
-	if a := FindAgent(agents, name); a != nil {
-		return *a, false, nil
-	}
-	sid, err := newSessionID()
-	if err != nil {
-		return Agent{}, false, err
-	}
-	a := Agent{Name: name, Model: model, SessionID: sid, CreatedAt: now, Address: AgentAddress(tree, name)}
-	agents = append(agents, a)
-	if err := saveAgents(root, agents); err != nil {
-		return Agent{}, false, err
-	}
-	return a, true, nil
+	return out, created, nil
 }
 
 // ErrMainAgent is returned when removing a tree's main agent: it is the tree's
@@ -122,21 +183,25 @@ func RemoveAgent(root, name string) (Agent, error) {
 // an agent on purpose goes through RemoveAgent; this is also how a launch that
 // failed takes back the record it made.
 func forgetAgent(root, name string) (Agent, error) {
-	agents, err := LoadAgents(root)
+	var gone Agent
+	err := withAgentsLock(root, func() error {
+		agents, err := LoadAgents(root)
+		if err != nil {
+			return err
+		}
+		for i, a := range agents {
+			if a.Name != name {
+				continue
+			}
+			gone = a
+			return saveAgents(root, append(agents[:i:i], agents[i+1:]...))
+		}
+		return fmt.Errorf("no agent named %q", name)
+	})
 	if err != nil {
 		return Agent{}, err
 	}
-	for i, a := range agents {
-		if a.Name != name {
-			continue
-		}
-		rest := append(agents[:i:i], agents[i+1:]...)
-		if err := saveAgents(root, rest); err != nil {
-			return Agent{}, err
-		}
-		return a, nil
-	}
-	return Agent{}, fmt.Errorf("no agent named %q", name)
+	return gone, nil
 }
 
 // CloseAgentTab closes an agent's tab in every supatree session, which stops
