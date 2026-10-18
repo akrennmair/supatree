@@ -567,6 +567,9 @@ func (m *Model) chooseAgentModel(tree, agent string) tea.Cmd {
 	if inst == nil {
 		return m.openAgent(tree, agent)
 	}
+	if agent == supatree.MainAgent {
+		return m.openAgent(tree, agent)
+	}
 	if agents, _ := supatree.LoadAgents(inst.Root); supatree.FindAgent(agents, agent) != nil {
 		return m.openAgent(tree, agent)
 	}

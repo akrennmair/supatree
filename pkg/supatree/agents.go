@@ -81,6 +81,15 @@ func checkAgentModel(a Agent, model string) error {
 	return fmt.Errorf("agent %q already runs on %s, not %s — pick a new agent name to use %s", a.Name, a.Model, model, model)
 }
 
+// checkMainModel keeps the main agent on the model recorded for its tree,
+// including when main has not yet been registered in agents.yml.
+func checkMainModel(agent, requested, treeModel string) error {
+	if agent == MainAgent && requested != "" && requested != treeModel {
+		return fmt.Errorf("main agent runs on the tree's model %q, not %q", treeModel, requested)
+	}
+	return nil
+}
+
 // withAgentsLock runs fn holding the tree's agents.yml lock. Every
 // read-modify-write of agents.yml goes through it: the watcher, the sidebars
 // and the PM open agents of one tree concurrently, each under only its own

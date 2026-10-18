@@ -50,6 +50,9 @@ func OpenRootAgent(inst *Instance, c *Config, ws zellij.Workspace, sidebarWidth,
 	if err := ValidateAgentName(agentName); err != nil {
 		return LaunchFailed, err
 	}
+	if err := checkMainModel(agentName, opts.Model, inst.Model); err != nil {
+		return LaunchFailed, err
+	}
 	tab := TabName(inst.Name, agentName)
 	lockErr := config.WithFileLock(openLockPath(tab), func() error {
 		outcome, err = openRootAgentLocked(inst, c, ws, sidebarWidth, agentName, tab, opts, startupW)

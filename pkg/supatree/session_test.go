@@ -10,6 +10,7 @@ import (
 
 	"github.com/panamafrancis/workbench/pkg/config"
 	"github.com/panamafrancis/workbench/pkg/testutil"
+	"github.com/panamafrancis/workbench/pkg/zellij"
 )
 
 func codexConfig() *Config {
@@ -120,6 +121,50 @@ func TestBindSessionLeavesLaterSiblingsSession(t *testing.T) {
 	}
 	if late, _ := bindSession(root, *FindAgent(agents, "late"), m); late.SessionID != sidLate {
 		t.Errorf("late agent bound %q, want %q", late.SessionID, sidLate)
+	}
+}
+
+func TestBindLaterCodexAgentDoesNotTakeEarlierUnclaimedSession(t *testing.T) {
+	home := testutil.IsolateHome(t)
+	t.Setenv("CODEX_HOME", filepath.Join(home, "codex"))
+	root := t.TempDir()
+	m, _ := codexConfig().Model("codex")
+	firstLaunch := time.Now().Add(-time.Minute)
+	secondLaunch := firstLaunch.Add(2 * time.Second)
+	for name, at := range map[string]time.Time{"first": firstLaunch, "second": secondLaunch} {
+		if _, _, err := EnsureAgent(root, "t", name, "codex", at); err != nil {
+			t.Fatal(err)
+		}
+		if err := updateAgent(root, name, func(a *Agent) { a.LaunchedAt = at }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const sidFirst = "0199a1b2-c3d4-7e5f-8a9b-000000000004"
+	writeCodexRollout(t, sidFirst, root, firstLaunch.Add(time.Second))
+	agents, err := LoadAgents(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := bindSession(root, *FindAgent(agents, "second"), m)
+	if err != nil || second.SessionID == sidFirst {
+		t.Fatalf("second bound to first's session: %+v, %v", second, err)
+	}
+	first, err := bindSession(root, *FindAgent(agents, "first"), m)
+	if err != nil || first.SessionID != sidFirst {
+		t.Errorf("first bound to %q, %v; want %q", first.SessionID, err, sidFirst)
+	}
+}
+
+func TestMainAgentRejectsModelOverrideBeforeRegistration(t *testing.T) {
+	inst := &Instance{Name: "t", Root: t.TempDir(), Model: "claude"}
+	if _, err := OpenRootAgent(inst, nil, zellij.Workspace{}, "20%", MainAgent, OpenOptions{Model: "codex"}, nil); err == nil {
+		t.Error("open accepted a different model for main")
+	}
+	if _, err := startAgent(inst, MainAgent, "brief", "codex"); err == nil {
+		t.Error("start_agent accepted a different model for main")
+	}
+	if agents, err := LoadAgents(inst.Root); err != nil || len(agents) != 0 {
+		t.Errorf("rejected model created agents: %v, %v", agents, err)
 	}
 }
 

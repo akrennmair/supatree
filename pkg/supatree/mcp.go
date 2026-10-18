@@ -1425,6 +1425,9 @@ func startAgent(inst *Instance, agent, brief, model string) (string, error) {
 	if agent == "" {
 		agent = MainAgent
 	}
+	if err := checkMainModel(agent, model, inst.Model); err != nil {
+		return "", err
+	}
 	key := inst.Model
 	if model != "" {
 		key = model

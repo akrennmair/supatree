@@ -69,6 +69,13 @@ func TestExistingAgentSkipsModelPicker(t *testing.T) {
 	}
 }
 
+func TestMainAgentSkipsModelPicker(t *testing.T) {
+	m, _ := agentPickerModel(t)
+	if cmd := m.chooseAgentModel(pickTree, supatree.MainAgent); cmd == nil || m.mode == modeNewAgentModel {
+		t.Error("main was offered a model different from its tree's")
+	}
+}
+
 func TestAgentRowShowsOtherModel(t *testing.T) {
 	m, inst := agentPickerModel(t)
 	for name, model := range map[string]string{"reviewer": pickCodex, "helper": pickClaude} {
