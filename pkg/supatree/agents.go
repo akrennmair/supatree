@@ -69,6 +69,17 @@ func saveAgents(root string, agents []Agent) error {
 	return os.Rename(tmp, path)
 }
 
+// checkAgentModel refuses a model asked for an agent that is already
+// registered on another: its session belongs to that CLI, so the request
+// could only be honoured by silently dropping it. An empty model asks for
+// nothing.
+func checkAgentModel(a Agent, model string) error {
+	if model == "" || model == a.Model {
+		return nil
+	}
+	return fmt.Errorf("agent %q already runs on %s, not %s — pick a new agent name to use %s", a.Name, a.Model, model, model)
+}
+
 // updateAgent applies fn to the named agent's record and saves it.
 func updateAgent(root, name string, fn func(*Agent)) error {
 	agents, err := LoadAgents(root)

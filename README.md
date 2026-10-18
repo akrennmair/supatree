@@ -256,8 +256,33 @@ models:
 
 ### Agents on other CLIs
 
-`supatree open <tree> --agent <name> --model <key>` runs an agent on any entry
-in `models:`, and the agent keeps that model on every reopen.
+A new agent can run on any entry in `models:`, and keeps that model on every
+reopen:
+
+- In the sidebar, `a` asks for the agent's name, then for its model, starting
+  on the tree's own. Models whose binary is not on `PATH` are listed as not
+  installed and cannot be picked. The picker is skipped when only one model is
+  configured, and for an agent that already exists.
+- `supatree open <tree> --agent <name> --model <key>` does the same from a
+  shell.
+- A PM's `start_agent` takes an optional `model`.
+
+A tree's main agent always runs on the tree's model. Asking for another model
+for an agent that already exists is refused: its session belongs to the CLI
+it was started on.
+
+Each agent row in the sidebar shows its model's `icon` (claude `✻`, codex
+`◎` by default). `icon` is any string, so plain Unicode, a Nerd Font glyph or
+an emoji all work:
+
+```yaml
+models:
+  codex:
+    icon: "🤖"
+```
+
+A model with no icon is named instead (`reviewer · codex`), when it is not
+the tree's own.
 
 Only `claude` and `codex` are supported. Other CLIs can be added under
 `models:`, but resuming their sessions won't work.

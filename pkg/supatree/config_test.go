@@ -140,3 +140,23 @@ func TestLoadWithoutWorkbench(t *testing.T) {
 		t.Errorf("fresh config = %+v", c)
 	}
 }
+
+func TestModelKeysSorted(t *testing.T) {
+	c := &Config{Models: map[string]config.Model{"zeta": {Binary: "z"}, "alpha": {Binary: "a"}}}
+	if got := c.ModelKeys(); len(got) != 2 || got[0] != "alpha" || got[1] != "zeta" {
+		t.Errorf("ModelKeys() = %v, want [alpha zeta]", got)
+	}
+}
+
+func TestModelInstalled(t *testing.T) {
+	c := &Config{Models: map[string]config.Model{
+		"here":    {Binary: "sh"},
+		"missing": {Binary: "no-such-agent-cli-xyz"},
+	}}
+	if !c.ModelInstalled("here") {
+		t.Error("sh should be installed")
+	}
+	if c.ModelInstalled("missing") || c.ModelInstalled("unknown") {
+		t.Error("a missing binary or unknown key counted as installed")
+	}
+}

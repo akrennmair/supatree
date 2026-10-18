@@ -84,6 +84,9 @@ func openRootAgentLocked(inst *Instance, c *Config, ws zellij.Workspace, sidebar
 	if err != nil {
 		return LaunchFailed, err
 	}
+	if err := checkAgentModel(agent, opts.Model); err != nil {
+		return LaunchFailed, err
+	}
 	// A record this call made is kept only if the agent launches: one left
 	// behind by a refused launch (nono rejecting its profile, say) would be
 	// listed as if it were running. A record made earlier — start_agent

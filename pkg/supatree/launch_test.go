@@ -118,11 +118,11 @@ func TestStartAgentBriefsThenQueues(t *testing.T) {
 	inst := &Instance{Name: treeA, Root: root, Model: defaultModelKey}
 
 	// Nothing to do and nothing waiting is an error, not an idle launch.
-	if _, err := startAgent(inst, "", ""); err == nil {
+	if _, err := startAgent(inst, "", "", ""); err == nil {
 		t.Error("startAgent with no brief and no mail succeeded")
 	}
 
-	if _, err := startAgent(inst, "", "fix the flaky test"); err != nil {
+	if _, err := startAgent(inst, "", "fix the flaky test", ""); err != nil {
 		t.Fatalf("startAgent: %v", err)
 	}
 	agents, err := LoadAgents(root)
@@ -147,7 +147,7 @@ func TestStartAgentDefaultsReviewBrief(t *testing.T) {
 		{Alias: aliasAPI, Review: &ReviewRef{Repo: "o/api", Number: 12, URL: "https://github.com/o/api/pull/12"}},
 		{Alias: "docs"},
 	}}
-	if _, err := startAgent(inst, "main", ""); err != nil {
+	if _, err := startAgent(inst, "main", "", ""); err != nil {
 		t.Fatalf("startAgent: %v", err)
 	}
 	msgs, _ := Mail(root, "main")
@@ -213,7 +213,7 @@ func TestStartAgentReportsTheWatchersAnswer(t *testing.T) {
 			time.Sleep(20 * time.Millisecond)
 		}
 	}()
-	out, err := startAgent(inst, "", "re-review")
+	out, err := startAgent(inst, "", "re-review", "")
 	<-done
 	if err != nil {
 		t.Fatal(err)
@@ -299,5 +299,31 @@ func TestOpenLockPathStaysInLocks(t *testing.T) {
 		if filepath.Dir(p) != filepath.Join(StateRoot(), "locks") {
 			t.Errorf("openLockPath(%q) = %q, outside the locks dir", tab, p)
 		}
+	}
+}
+
+// A new agent runs on the model asked for; an existing one keeps its own, and
+// asking for another is refused rather than silently ignored.
+func TestStartAgentModel(t *testing.T) {
+	testutil.IsolateHome(t)
+	noLaunchWait(t)
+	root := t.TempDir()
+	inst := &Instance{Name: treeA, Root: root, Model: defaultModelKey}
+
+	if _, err := startAgent(inst, agentReviewer, "review it", "codex"); err != nil {
+		t.Fatalf("startAgent: %v", err)
+	}
+	agents, _ := LoadAgents(root)
+	if a := FindAgent(agents, agentReviewer); a == nil || a.Model != "codex" {
+		t.Fatalf("reviewer = %+v; want it on codex", a)
+	}
+	if _, err := startAgent(inst, agentReviewer, "again", "codex"); err != nil {
+		t.Errorf("same model again: %v", err)
+	}
+	if _, err := startAgent(inst, agentReviewer, "again", ""); err != nil {
+		t.Errorf("no model named: %v", err)
+	}
+	if _, err := startAgent(inst, agentReviewer, "again", defaultModelKey); err == nil {
+		t.Error("switched an existing codex agent to claude")
 	}
 }

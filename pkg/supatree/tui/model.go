@@ -42,6 +42,7 @@ const (
 	modeHelp               // showing the keybinding reference
 	modeNewStackName       // naming a new stack (S)
 	modeConfirmDeleteAgent // removing an agent (d on an agent row)
+	modeNewAgentModel      // picking a new agent's model, after naming it (a)
 )
 
 type rowKind int
@@ -86,6 +87,16 @@ type row struct {
 	tree  string // supatree name this row belongs to
 	label string // agent name / member alias / subheader text
 	alias string // member alias (rowMember)
+	icon  string // the agent's model's icon (rowAgent)
+	model string // the agent's model, when it has no icon and is not its tree's (rowAgent)
+}
+
+// modelChoice is one entry of the new-agent model picker.
+type modelChoice struct {
+	key       string
+	installed bool // its binary is on PATH; a missing one is listed but not chosen
+	isDefault bool // the tree's own model, where the cursor starts
+	icon      string
 }
 
 // Model is the supatree sidebar model.
@@ -117,7 +128,9 @@ type Model struct {
 	pms         []supatree.PM   // the PMs, top first
 	pmPending   map[string]int  // per PM: requests queued for it that it has not read yet
 	actionPM    string          // PM targeted by the active input mode
-	actionAgent string          // agent targeted by modeConfirmDeleteAgent (in actionTree)
+	actionAgent string          // agent targeted by modeConfirmDeleteAgent or named in modeNewAgentModel (in actionTree)
+	models      []modelChoice   // what modeNewAgentModel offers
+	modelCursor int             // cursor within the modeNewAgentModel picker
 	creating    []string        // supatrees being created by this sidebar, shown until they land
 	helpScroll  int             // first line of the `?` panel in view
 	detail      string          // full error text the `?` panel shows instead of the reference (opened by `e`)
@@ -401,12 +414,29 @@ func (m *Model) appendTree(rows []row, inst *supatree.Instance) []row {
 	// Every tree has a main agent, listed first, whether or not agents.yml has
 	// recorded it yet — it is written there only once main is first opened, so
 	// a tree given a named agent before that would otherwise lose its main row.
-	rows = append(rows, row{kind: rowAgent, tree: inst.Name, label: supatree.MainAgent})
+	// Every agent shows its model's icon, so which CLI each one runs is
+	// visible at a glance once a tree mixes them. A model with no icon is
+	// named instead, but only when it is not the tree's: a tree all on one
+	// model needs no label.
+	agentRow := func(name string) row {
+		r := row{kind: rowAgent, tree: inst.Name, label: name}
+		key := inst.Model
+		if a := supatree.FindAgent(agents, name); a != nil {
+			key = a.Model
+		}
+		if mc, err := m.stCfg.Model(key); err == nil && mc.Icon != "" {
+			r.icon = mc.Icon
+		} else if key != inst.Model {
+			r.model = key
+		}
+		return r
+	}
+	rows = append(rows, agentRow(supatree.MainAgent))
 	for _, a := range agents {
 		if a.Name == supatree.MainAgent {
 			continue
 		}
-		rows = append(rows, row{kind: rowAgent, tree: inst.Name, label: a.Name})
+		rows = append(rows, agentRow(a.Name))
 	}
 	// The repositories header is a row of its own rather than a plain
 	// subheader: it folds, and folded it still reports every member's PR
