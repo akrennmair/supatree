@@ -373,14 +373,19 @@ For Codex agents:
      (`Load key ...: Operation not permitted`).
    - `NONO_CAP_FILE`: without it, `nono why --self` reports `NOT SANDBOXED`,
      so the agent cannot tell a sandbox denial from any other error.
+   - `GOPATH`, when you set one: without it Go falls back to `~/go`, which
+     the sandbox does not grant (it grants your `GOPATH`), so nothing builds.
+     `GOPRIVATE`/`GONOSUMDB` likewise, for private modules.
 
-   `inherit = "core"` always drops both, since the core set includes neither,
-   even when `include_only` lists them. With a restrictive policy, use:
+   `inherit = "core"` always drops these, since the core set includes none of
+   them, even when `include_only` lists them. With a restrictive policy,
+   allow what agents need and keep credentials out, e.g.:
 
    ```toml
    [shell_environment_policy]
    inherit = "all"
-   include_only = ["PATH", "HOME", "SSH_AUTH_SOCK", "NONO_CAP_FILE"]  # plus whatever else you allow
+   include_only = ["PATH", "HOME", "USER", "SHELL", "TMPDIR", "LANG",
+                   "SSH_AUTH_SOCK", "NONO_CAP_FILE", "GO*", "DOCKER_HOST", "SUPATREE*"]
    ```
 
    `supatree doctor` checks this whenever a codex model is configured.

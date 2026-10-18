@@ -89,9 +89,15 @@ func codexConfigPath() string {
 
 // codexAgentEnv are the variables a codex agent's commands need from the
 // environment supatree and nono launch it with, and what breaks without each.
-var codexAgentEnv = []struct{ name, need string }{
-	{"SSH_AUTH_SOCK", "git and ssh have no agent socket, fall back to reading the private key, and the sandbox refuses: pushes fail"},
-	{"NONO_CAP_FILE", "nono why --self reports NOT SANDBOXED, so the agent cannot tell a sandbox denial from any other"},
+// ifSet ones matter only when set where doctor runs: GOPATH unset means Go's
+// default, which nothing needs passing to reach.
+var codexAgentEnv = []struct {
+	name, need string
+	ifSet      bool
+}{
+	{"SSH_AUTH_SOCK", "git and ssh have no agent socket, fall back to reading the private key, and the sandbox refuses: pushes fail", false},
+	{"NONO_CAP_FILE", "nono why --self reports NOT SANDBOXED, so the agent cannot tell a sandbox denial from any other", false},
+	{"GOPATH", "Go falls back to ~/go, which the sandbox does not grant (it grants your GOPATH): no builds, tests or go install", true},
 }
 
 // CodexShellCheck reports whether the commands a codex agent runs see the
@@ -114,6 +120,9 @@ func CodexShellCheck() setup.CheckResult {
 	}
 	var problems, missing []string
 	for _, v := range codexAgentEnv {
+		if v.ifSet && os.Getenv(v.name) == "" {
+			continue
+		}
 		if ok, why := doc.Policy.keeps(v.name); !ok {
 			problems = append(problems, fmt.Sprintf("%s (%s): %s", v.name, why, v.need))
 			missing = append(missing, fmt.Sprintf("%q", v.name))
@@ -127,5 +136,5 @@ func CodexShellCheck() setup.CheckResult {
 			Hint:    "in " + cfgPath + ", [shell_environment_policy]: inherit = \"all\" and add " + strings.Join(missing, ", ") + " to include_only (if you use one)",
 		}
 	}
-	return setup.CheckResult{Name: name, Status: setup.StatusOK, Message: "commands Codex runs see SSH_AUTH_SOCK and NONO_CAP_FILE"}
+	return setup.CheckResult{Name: name, Status: setup.StatusOK, Message: "commands Codex runs see what codex agents need"}
 }

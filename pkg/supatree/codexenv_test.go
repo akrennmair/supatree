@@ -42,6 +42,7 @@ func TestCodexShellPolicyKeepsSSHAuthSock(t *testing.T) {
 
 func TestCodexShellCheckReadsConfig(t *testing.T) {
 	home := testutil.IsolateHome(t)
+	t.Setenv("GOPATH", "") // covered by TestCodexShellCheckGOPATH
 	codexHome := filepath.Join(home, "codex")
 	t.Setenv("CODEX_HOME", codexHome)
 	if r := CodexShellCheck(); r.Status != setup.StatusOK {
@@ -68,5 +69,27 @@ func TestCodexShellCheckReadsConfig(t *testing.T) {
 	write("[shell_environment_policy]\ninherit = \"all\"\ninclude_only = [\"PATH\", \"HOME\", \"SSH_AUTH_SOCK\", \"NONO_CAP_FILE\"]\n")
 	if r := CodexShellCheck(); r.Status != setup.StatusOK {
 		t.Errorf("fixed policy: %+v", r)
+	}
+}
+
+// GOPATH is checked only when set: unset, Go's default needs no passing.
+func TestCodexShellCheckGOPATH(t *testing.T) {
+	home := testutil.IsolateHome(t)
+	codexHome := filepath.Join(home, "codex")
+	t.Setenv("CODEX_HOME", codexHome)
+	if err := os.MkdirAll(codexHome, 0755); err != nil {
+		t.Fatal(err)
+	}
+	policy := "[shell_environment_policy]\ninherit = \"all\"\ninclude_only = [\"PATH\", \"SSH_AUTH_SOCK\", \"NONO_CAP_FILE\"]\n"
+	if err := os.WriteFile(filepath.Join(codexHome, "config.toml"), []byte(policy), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOPATH", "")
+	if r := CodexShellCheck(); r.Status != setup.StatusOK {
+		t.Errorf("GOPATH unset: %+v", r)
+	}
+	t.Setenv("GOPATH", filepath.Join(home, "code", "go"))
+	if r := CodexShellCheck(); r.Status != setup.StatusWarn || !strings.Contains(r.Message, "GOPATH") {
+		t.Errorf("GOPATH set but dropped: %+v", r)
 	}
 }
