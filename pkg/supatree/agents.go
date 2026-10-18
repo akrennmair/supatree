@@ -25,6 +25,11 @@ type Agent struct {
 	// agent was launched still reports the name that agent is actually running
 	// under — the launched process cannot be renamed.
 	Address string `yaml:"address,omitempty"`
+	// LaunchedAt is when the agent was last launched into a fresh session by
+	// a CLI that picks its own session ID (sandbox.PicksOwnSessionID). Until
+	// that session is found and its ID recorded (bindSession), SessionID is a
+	// placeholder nothing was launched under.
+	LaunchedAt time.Time `yaml:"launched_at,omitempty"`
 }
 
 type agentsFile struct {
@@ -62,6 +67,20 @@ func saveAgents(root string, agents []Agent) error {
 		return fmt.Errorf("write agents: %w", err)
 	}
 	return os.Rename(tmp, path)
+}
+
+// updateAgent applies fn to the named agent's record and saves it.
+func updateAgent(root, name string, fn func(*Agent)) error {
+	agents, err := LoadAgents(root)
+	if err != nil {
+		return err
+	}
+	a := FindAgent(agents, name)
+	if a == nil {
+		return fmt.Errorf("no agent named %q", name)
+	}
+	fn(a)
+	return saveAgents(root, agents)
 }
 
 // FindAgent returns the agent with the given name, or nil.

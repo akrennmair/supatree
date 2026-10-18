@@ -254,6 +254,33 @@ models:
     agent_name_args: ["--name", "{agent_name}"]
 ```
 
+### Agents on other CLIs
+
+`supatree open <tree> --agent <name> --model <key>` runs an agent on any entry
+in `models:`, and the agent keeps that model on every reopen.
+
+Only `claude` and `codex` are supported. Other CLIs can be added under
+`models:`, but resuming their sessions won't work.
+
+An agent resumes its own session by the ID recorded in `agents.yml`. Claude
+takes that ID at launch (`new_session_args`). Codex picks its own, so a model
+with `session_store: codex` is launched fresh, and supatree then finds the
+session that started in the tree root after that launch (the earliest one no
+other agent owns) and records its ID. Later opens resume it with
+`resume_session_args` (`["resume", "{session_id}"]`), so several Codex agents
+can share a tree. Two Codex agents launched into one tree within seconds of
+each other may each be given the other's session.
+
+```yaml
+# ~/.config/supatree/config.yml
+models:
+  codex:
+    binary: codex
+    resume_session_args: ["resume", "{session_id}"]
+    prompt_args: ["{prompt}"]
+    session_store: codex
+```
+
 ## Notifications
 
 `supatree watch` is the single background poller. Each round it refreshes PR status on the shared staleness gate, derives the same summary `supatree status` shows, diffs it against the previous round, appends what changed to the ledger (`~/.local/state/supatree/ledger/events.jsonl`), and delivers the few events that warrant interrupting you as desktop notifications.

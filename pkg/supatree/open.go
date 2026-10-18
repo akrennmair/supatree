@@ -102,10 +102,21 @@ func openRootAgentLocked(inst *Instance, c *Config, ws zellij.Workspace, sidebar
 	// Resume only when this agent's session transcript actually exists; a freshly
 	// created agent (or one whose id was never launched) starts a new session so
 	// it never lands in another agent's chat.
-	resume := sandbox.SessionExists(inst.Root, agent.SessionID)
 	model, err := c.Model(agent.Model)
 	if err != nil {
 		return LaunchFailed, err
+	}
+	// A CLI that picked its own session ID last time is resumed by that ID
+	// once it is known; until then the agent starts fresh again.
+	if agent, err = bindSession(inst.Root, agent, model); err != nil {
+		return LaunchFailed, err
+	}
+	resume := sandbox.SessionExistsFor(model, inst.Root, agent.SessionID)
+	if !resume && sandbox.PicksOwnSessionID(model) {
+		// The session this launch starts is found later by its start time.
+		if err := updateAgent(inst.Root, agentName, func(r *Agent) { r.LaunchedAt = time.Now() }); err != nil {
+			return LaunchFailed, err
+		}
 	}
 	if err := NonoPreflight(model.NonoProfile); err != nil {
 		return LaunchFailed, err
