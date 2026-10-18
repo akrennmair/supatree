@@ -308,42 +308,59 @@ models:
 
 #### Setting up Codex
 
-`supatree init` sets up Claude only. For Codex agents:
+For Codex agents:
 
 1. **Install and log in.** Install the `codex` CLI so it is on `PATH`, then run
    `codex login`.
 
-2. **Give it a sandbox profile.** The default `nono_profile` for codex is
-   `default`, which cannot write Codex's own state or read supatree's config.
-   Create a nono profile (e.g. `~/.config/nono/profiles/supatree-codex.json`)
-   that extends `default` with your toolchain and at least:
+2. **Install nono's codex package, then re-run `supatree init`.**
 
-   ```json
-   {
-     "extends": "default",
-     "meta": { "name": "supatree-codex" },
-     "filesystem": {
-       "allow": ["$HOME/.codex", "$HOME/.cache/supatree/agent"],
-       "read": ["$HOME/.config/supatree"]
-     },
-     "network": { "block": false }
-   }
+   ```sh
+   nono pull nolabs-ai/codex && supatree init
    ```
 
-   Do not grant tree paths: supatree adds each tree's grants per launch. Then
-   point the model at it:
+   The package's `codex` profile grants Codex its state (`~/.codex`) and the
+   keychain its login lives in. `supatree init` then writes `supatree-codex`
+   on top of it, with what every supatree agent gets (toolchain, SSH agent,
+   supatree's config read-only, the agent cache). Tree access is still
+   granted per launch.
+
+   The package also appends a block to `~/.codex/config.toml` whose first key,
+   `developer_instructions`, lands in whatever `[section]` precedes it (TOML
+   reads a key as belonging to the last header above it). If Codex then fails
+   with `invalid type: string ..., expected u32 in tui.model_availability_nux`
+   (or similar), move `developer_instructions` above the first `[...]` header.
+
+   The built-in codex model runs under `supatree-codex` with
+   `--dangerously-bypass-approvals-and-sandbox --no-daemon`. A `codex` entry
+   saved in your `config.yml` before this keeps its own `nono_profile` and
+   `args`, so set them:
 
    ```yaml
    # ~/.config/supatree/config.yml
    models:
      codex:
        nono_profile: supatree-codex
-       args: ["--dangerously-bypass-approvals-and-sandbox"]  # nono is the sandbox
+       args: ["--dangerously-bypass-approvals-and-sandbox", "--no-daemon"]
    ```
+
+   - `--dangerously-bypass-approvals-and-sandbox`: nono is the sandbox, and
+     Codex's own cannot nest inside it.
+   - `--no-daemon`: without it Codex hands its session to the shared
+     app-server daemon (the ChatGPT app and earlier `codex` runs start one),
+     which runs commands and MCP servers **outside nono** and without the
+     agent's `SUPATREE_*` environment.
 
    The other codex fields (`resume_session_args`, `prompt_args`,
    `session_store`, `icon`) are filled in from the built-in defaults when
    left out.
+
+   Every profile supatree and workbench generate, Claude's included, denies
+   that daemon's sockets (`/private/tmp/codex-daemon-<uid>`,
+   `~/.codex/app-server-daemon`): on macOS nono lets a sandboxed process
+   connect to any Unix socket it can name, and an agent that reaches the
+   daemon can have it run commands with your full permissions. A hand-written
+   profile must deny them too.
 
 3. **Register supatree's MCP server with Codex, forwarding supatree's
    environment.** The tools find their tree and agent from `SUPATREE_*`
