@@ -156,7 +156,7 @@ func TestBindLaterCodexAgentDoesNotTakeEarlierUnclaimedSession(t *testing.T) {
 }
 
 func TestMainAgentRejectsModelOverrideBeforeRegistration(t *testing.T) {
-	inst := &Instance{Name: "t", Root: t.TempDir(), Model: "claude"}
+	inst := &Instance{Name: "t", Root: t.TempDir(), Model: defaultModelKey}
 	if _, err := OpenRootAgent(inst, nil, zellij.Workspace{}, "20%", MainAgent, OpenOptions{Model: "codex"}, nil); err == nil {
 		t.Error("open accepted a different model for main")
 	}

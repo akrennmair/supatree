@@ -364,7 +364,24 @@ For Codex agents:
    daemon can have it run commands with your full permissions. A hand-written
    profile must deny them too.
 
-3. **Register supatree's MCP server with Codex, forwarding supatree's
+3. **Let Codex's commands see the SSH agent.** Codex builds a fresh
+   environment for every command it runs from `[shell_environment_policy]`
+   in `~/.codex/config.toml`. If that drops `SSH_AUTH_SOCK`, the agent's
+   `git push` has no agent socket, and ssh falls back to reading the private
+   key file, which the sandbox refuses (`Load key ...: Operation not
+   permitted`). `inherit = "core"` always drops it, since the core set does not
+   include it, even when `include_only` lists it. With a restrictive policy,
+   use:
+
+   ```toml
+   [shell_environment_policy]
+   inherit = "all"
+   include_only = ["PATH", "HOME", "SSH_AUTH_SOCK"]  # plus whatever else you allow
+   ```
+
+   `supatree doctor` checks this whenever a codex model is configured.
+
+4. **Register supatree's MCP server with Codex, forwarding supatree's
    environment.** The tools find their tree and agent from `SUPATREE_*`
    variables that supatree sets at launch, but Codex starts MCP servers with
    only a minimal environment. Register the server:
@@ -387,7 +404,7 @@ For Codex agents:
                "SUPATREE_MEMBER", "SUPATREE_PM", "SUPATREE_PM_NAME"]
    ```
 
-4. **Check it.** In a tree, press `a`, name the agent and pick codex, then ask
+5. **Check it.** In a tree, press `a`, name the agent and pick codex, then ask
    it to call `supatree_info`: it should list the tree's repositories.
 
 ## Notifications

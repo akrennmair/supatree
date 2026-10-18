@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/panamafrancis/workbench/pkg/config"
 	"github.com/panamafrancis/workbench/pkg/setup"
 )
 
@@ -62,7 +63,21 @@ func Doctor(cfg *Config) []setup.CheckResult {
 			results = append(results, profileCheck(fmt.Sprintf("nono profile %s, extended by %s", parent, p), parent))
 		}
 	}
+	if cfg != nil && usesCodex(cfg) {
+		results = append(results, CodexShellCheck())
+	}
 	return results
+}
+
+// usesCodex reports whether a configured model keeps codex sessions, i.e. is
+// a codex agent.
+func usesCodex(cfg *Config) bool {
+	for _, m := range cfg.models() {
+		if m.SessionStore == config.SessionStoreCodex {
+			return true
+		}
+	}
+	return false
 }
 
 func toolCheck(name, hint string, args ...string) setup.CheckResult {
