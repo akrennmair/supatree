@@ -215,7 +215,7 @@ func TestPromptInputWrapsToPaneWidth(t *testing.T) {
 	}
 }
 
-// A malformed reference is reported as it is typed and enter will not pass it.
+// The trailing reference may be incomplete while typed; enter validates it.
 func TestNewReviewRejectsMalformedPR(t *testing.T) {
 	testutil.IsolateHome(t)
 	m := New(supatree.DefaultConfig(), zellij.Workspace{})
@@ -224,11 +224,14 @@ func TestNewReviewRejectsMalformedPR(t *testing.T) {
 	for _, r := range "o/a#7 nope" {
 		m.Update(key(string(r)))
 	}
-	if m.inputErr == nil {
-		t.Fatal("a malformed PR raised no warning")
+	if m.inputErr != nil {
+		t.Fatalf("incomplete trailing PR raised a warning while typing: %v", m.inputErr)
 	}
 	if _, cmd := m.Update(key("enter")); cmd != nil || m.mode != modeNewReviewPRs {
 		t.Fatalf("enter on a malformed PR: mode = %v, cmd = %v, want the prompt still open", m.mode, cmd)
+	}
+	if m.inputErr == nil {
+		t.Fatal("enter on a malformed PR raised no warning")
 	}
 	m.Update(key("esc"))
 	if m.mode != modeNormal || m.reviewing || m.reviewPRs != nil {

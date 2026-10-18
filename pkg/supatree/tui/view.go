@@ -600,7 +600,7 @@ func helpLines() []string {
 		"",
 		styleHeader.Render("Supatrees"),
 		"  n        new supatree",
-		"  N        new review tree from PR URLs",
+		"  N        new review tree from PRs",
 		"  s        sync members",
 		"  S        new stack",
 		"",

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -466,12 +467,10 @@ func (m *Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// the time the offending character has been deleted.
 			m.inputErr = m.validateTreeName(m.input.Value())
 		case modeNewReviewPRs:
-			// An empty field is not an error yet — it is where everyone starts.
-			if v := m.input.Value(); strings.TrimSpace(v) != "" {
-				_, m.inputErr = parsePRTokens(v)
-			} else {
-				m.inputErr = nil
-			}
+			// The last token may still be in progress (for example, while its
+			// PR number is being typed). Validate completed tokens here; enter
+			// validates the full value.
+			m.inputErr = validateCompletedPRTokens(m.input.Value())
 		case modeNewStackName:
 			if v := m.input.Value(); v != "" {
 				m.inputErr = m.validateStackName(v)
@@ -531,6 +530,29 @@ func parsePRTokens(s string) ([]string, error) {
 		}
 	}
 	return toks, nil
+}
+
+// validateCompletedPRTokens checks every token before the last separator.
+// The trailing token is still being typed until a space or comma completes it.
+func validateCompletedPRTokens(s string) error {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	last, _ := utf8.DecodeLastRuneInString(s)
+	completed := s
+	if last != ',' && !unicode.IsSpace(last) {
+		completed = ""
+		for i, r := range s {
+			if r == ',' || unicode.IsSpace(r) {
+				completed = s[:i]
+			}
+		}
+	}
+	if strings.TrimSpace(completed) == "" {
+		return nil
+	}
+	_, err := parsePRTokens(completed)
+	return err
 }
 
 // promptTreeName opens the name prompt that ends both new-tree flows.
