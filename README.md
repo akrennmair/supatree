@@ -306,6 +306,64 @@ models:
     session_store: codex
 ```
 
+#### Setting up Codex
+
+`supatree init` sets up Claude only. For Codex agents:
+
+1. **Install and log in.** Install the `codex` CLI so it is on `PATH`, then run
+   `codex login`.
+
+2. **Give it a sandbox profile.** The default `nono_profile` for codex is
+   `default`, which cannot write Codex's own state or read supatree's config.
+   Create a nono profile (e.g. `~/.config/nono/profiles/supatree-codex.json`)
+   that extends `default` with your toolchain and at least:
+
+   ```json
+   {
+     "extends": "default",
+     "meta": { "name": "supatree-codex" },
+     "filesystem": {
+       "allow": ["$HOME/.codex", "$HOME/.cache/supatree/agent"],
+       "read": ["$HOME/.config/supatree"]
+     },
+     "network": { "block": false }
+   }
+   ```
+
+   Do not grant tree paths: supatree adds each tree's grants per launch. Then
+   point the model at it:
+
+   ```yaml
+   # ~/.config/supatree/config.yml
+   models:
+     codex:
+       nono_profile: supatree-codex
+       args: ["--dangerously-bypass-approvals-and-sandbox"]  # nono is the sandbox
+   ```
+
+   The other codex fields (`resume_session_args`, `prompt_args`,
+   `session_store`, `icon`) are filled in from the built-in defaults when
+   left out.
+
+3. **Register supatree's MCP server with Codex, forwarding supatree's
+   environment.** The tools find their tree and agent from `SUPATREE_*`
+   variables that supatree sets at launch, but Codex starts MCP servers with
+   only a minimal environment. List them in `env_vars`, or every tree tool
+   answers "Not inside a supatree session":
+
+   ```toml
+   # ~/.codex/config.toml
+   [mcp_servers.supatree]
+   command = "/path/to/supatree"   # `which supatree`
+   args = ["mcp"]
+   env_vars = ["SUPATREE", "SUPATREE_NAME", "SUPATREE_ROOT", "SUPATREE_MEMBERS",
+               "SUPATREE_BRANCH_SLUG", "SUPATREE_AGENT", "SUPATREE_MODE",
+               "SUPATREE_MEMBER", "SUPATREE_PM", "SUPATREE_PM_NAME"]
+   ```
+
+4. **Check it.** In a tree, press `a`, name the agent and pick codex, then ask
+   it to call `supatree_info`: it should list the tree's repositories.
+
 ## Notifications
 
 `supatree watch` is the single background poller. Each round it refreshes PR status on the shared staleness gate, derives the same summary `supatree status` shows, diffs it against the previous round, appends what changed to the ledger (`~/.local/state/supatree/ledger/events.jsonl`), and delivers the few events that warrant interrupting you as desktop notifications.
