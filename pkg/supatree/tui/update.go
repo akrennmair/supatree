@@ -541,18 +541,22 @@ func validateCompletedPRTokens(s string) error {
 	last, _ := utf8.DecodeLastRuneInString(s)
 	completed := s
 	if last != ',' && !unicode.IsSpace(last) {
-		completed = ""
-		for i, r := range s {
-			if r == ',' || unicode.IsSpace(r) {
-				completed = s[:i]
-			}
+		if idx := strings.LastIndexFunc(s, func(r rune) bool { return r == ',' || unicode.IsSpace(r) }); idx >= 0 {
+			completed = s[:idx]
+		} else {
+			completed = ""
 		}
 	}
-	if strings.TrimSpace(completed) == "" {
+	toks := strings.FieldsFunc(completed, func(r rune) bool { return r == ',' || unicode.IsSpace(r) })
+	if len(toks) == 0 {
 		return nil
 	}
-	_, err := parsePRTokens(completed)
-	return err
+	for _, t := range toks {
+		if _, _, err := supatree.ParsePRRef(t); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // promptTreeName opens the name prompt that ends both new-tree flows.

@@ -239,6 +239,27 @@ func TestNewReviewRejectsMalformedPR(t *testing.T) {
 	}
 }
 
+// Separator keystrokes alone (e.g. leading commas or spaces) should not raise
+// premature warnings while typing, but enter rejects them as empty.
+func TestNewReviewSeparatorKeystrokesDoNotWarnPrematurely(t *testing.T) {
+	testutil.IsolateHome(t)
+	m := New(supatree.DefaultConfig(), zellij.Workspace{})
+
+	m.updateNormal(key("N"))
+	for _, r := range " , " {
+		m.Update(key(string(r)))
+	}
+	if m.inputErr != nil {
+		t.Fatalf("separator keystrokes raised a premature warning: %v", m.inputErr)
+	}
+	if _, cmd := m.Update(key("enter")); cmd != nil || m.mode != modeNewReviewPRs {
+		t.Fatalf("enter on empty/separators: mode = %v, cmd = %v, want the prompt still open", m.mode, cmd)
+	}
+	if m.inputErr == nil {
+		t.Fatal("enter on empty/separators raised no warning")
+	}
+}
+
 // A review being created is listed under Reviews, not WIP, and its name is
 // taken until it lands.
 func TestNewReviewPlaceholderUnderReviews(t *testing.T) {
