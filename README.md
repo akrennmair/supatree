@@ -93,7 +93,7 @@ supatree review fork <name>                     # turn the review into a proposa
 
 The PMs have a section of their own pinned at the very top, **Product Managers**, above a divider — one `◆ <name>` row per PM, with `●` while its tab is open and `✉N` for requests it has not read yet. It is there even before any supatree exists; `gg` then `enter` (or `P` from anywhere) opens or focuses the top PM. `p` adds a PM, `d` on a PM row removes one. A cold `supatree start` opens the top PM for you; attaching to a running session leaves you where you were.
 
-Below it the supatrees are split in two: **WIP**, your own changes, and **Reviews**, the review trees `supatree review` made. Each heading appears once its section has a tree in it. A supatree you create with `n` is listed under WIP straight away, as `◌ <name>  creating…`, while its members are cloned and the stack's setup runs.
+Below it the supatrees are split in two: **WIP**, your own changes, and **Reviews**, the review trees `supatree review` (or `N` in the sidebar) made. Each heading appears once its section has a tree in it. A supatree you create with `n` (or a review tree with `N`) is listed straight away under its section, as `◌ <name>  creating…`, while its members are cloned and the stack's setup runs.
 
 | Key | Action |
 | --- | --- |
@@ -108,6 +108,7 @@ Below it the supatrees are split in two: **WIP**, your own changes, and **Review
 | `a` | Add an agent to the selected supatree — on a member row, open that repo's agent |
 | `p` | Add a PM |
 | `n` | New supatree |
+| `N` | New review tree |
 | `s` | Sync the selected supatree |
 | `d` | Delete the selected supatree — on an agent row, remove that agent and close its tab (not `main`, which goes with the tree); on a PM row, remove that PM |
 | `D` | Open (or focus) the dashboard tab |
@@ -119,7 +120,7 @@ Below it the supatrees are split in two: **WIP**, your own changes, and **Review
 
 The mouse works too: the wheel scrolls the list and a click selects a row. Wheel scrolling pans the view without moving the cursor, so you can read further down the list and it stays put — the view snaps back to the cursor as soon as you press a movement key. When the list is taller than the pane it scrolls to keep the cursor in view.
 
-Pressing `n` prompts for a **name** (leave it blank to auto-generate a city name). If more than one stack is registered you first pick which stack from a list (`↑`/`↓` or `j`/`k` to move, `enter` to select, `esc` to cancel), then the name. The name is checked as you type — a name that would be rejected (`feature-v1.1`, or one already taken by a supatree) shows the reason under the field and `enter` leaves the prompt open so you can fix it in place; the warning clears with the character that caused it. After creation the cursor lands on the new supatree so it scrolls into view.
+Pressing `n` prompts for a **name** (leave it blank to auto-generate a city name). If more than one stack is registered you first pick which stack from a list (`↑`/`↓` or `j`/`k` to move, `enter` to select, `esc` to cancel), then the name. The name is checked as you type — a name that would be rejected (`feature-v1.1`, or one already taken by a supatree) shows the reason under the field and `enter` leaves the prompt open so you can fix it in place; the warning clears with the character that caused it. After creation the cursor lands on the new supatree so it scrolls into view. Pressing `N` is the same flow for a review tree, with a pull-request prompt between stack and name (URLs or `owner/repo#number`).
 
 Each supatree's **repositories section starts folded**, so a long list of supatrees stays readable. Its header carries a coloured count per PR status instead (`◌1 ◉2 ✓1 ✕1 ·3` — draft, open, merged, closed, and members with no PR yet); the same summary moves up onto the supatree row when the whole supatree is folded. Unfold the section (`Space`, `l` or `enter` on the `repositories` row) to see the member rows, which show each repo's PR state and number in full (`◉ open #871`).
 
