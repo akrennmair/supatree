@@ -228,16 +228,12 @@ func NotifyStatePath() string {
 	return filepath.Join(CacheDir(), "notify-state.json")
 }
 
-// PMNudgeStatePath records, per PM, the newest request the sidebar has already
-// typed "You got mail." for. It is in the cache rather than PMDir so the PM's
-// sandbox cannot write it, and it is disposable: losing it costs one extra nudge.
+// PMNudgeStatePath records, per PM, the queue position of the newest request
+// the watcher has already nudged it about. It is in the cache rather than PMDir
+// so the PM's sandbox cannot write it, and it is disposable: losing it costs one
+// extra nudge.
 func PMNudgeStatePath() string {
 	return filepath.Join(CacheDir(), "pm-nudge.json")
-}
-
-// PMNudgeLockPath elects the one sidebar that nudges in a round.
-func PMNudgeLockPath() string {
-	return filepath.Join(CacheDir(), "pm-nudge.lock")
 }
 
 // WatchLockPath elects the single watcher process. It is held for the whole

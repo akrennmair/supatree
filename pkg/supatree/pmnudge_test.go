@@ -1,214 +1,219 @@
 package supatree
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/panamafrancis/workbench/pkg/testutil"
+	"github.com/panamafrancis/workbench/pkg/zellij"
 )
 
-// panesFixture is trimmed from real `zellij action list-panes --json --tab`
-// output (zellij 0.45.1).
-const panesFixture = `[
- {"id":0,"is_plugin":true,"title":"(.) - zellij:link","exited":false,"tab_name":"supatree"},
- {"id":0,"is_plugin":false,"title":"sidebar","exited":false,"tab_name":"supatree"},
- {"id":2,"is_plugin":false,"title":"sidebar","exited":false,"tab_name":"supatree-pm"},
- {"id":3,"is_plugin":false,"title":"supatree-pm","exited":false,"tab_name":"supatree-pm"},
- {"id":6,"is_plugin":false,"title":"sidebar","exited":false,"tab_name":"supatree-pm:research"},
- {"id":7,"is_plugin":false,"title":"supatree-pm:research","exited":true,"tab_name":"supatree-pm:research"},
- {"id":8,"is_plugin":false,"title":"sidebar","exited":false,"tab_name":"supatree-pm:ops"},
- {"id":9,"is_plugin":false,"title":"✳ Claude Code","exited":false,"tab_name":"supatree-pm:ops"}
-]`
-
-// The agent panes panesFixture has for the top PM and for a PM named "ops".
-const (
-	topPMPane = "terminal_3"
-	opsPMPane = "terminal_9"
-)
-
-func TestPMPaneID(t *testing.T) {
-	panes, err := parsePanes([]byte(panesFixture))
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestNudgeDue(t *testing.T) {
 	for _, tc := range []struct {
-		tab, want string
-		ok        bool
+		name      string
+		st        readOffset
+		end, size int64
+		want      bool
 	}{
-		{"supatree-pm", topPMPane, true},
-		{"supatree-pm:research", "", false}, // its agent pane has exited
-		{"supatree-pm:ops", opsPMPane, true},
-		{"supatree", "", false}, // a sidebar and a plugin, no agent
-		{"supatree-pm:gone", "", false},
+		{"first mail", readOffset{}, 100, 100, true},
+		{"already nudged", readOffset{Offset: 100, Size: 100}, 100, 150, false},
+		{"newer mail", readOffset{Offset: 100, Size: 100}, 150, 150, true},
+		{"queue truncated", readOffset{Offset: 100, Size: 100}, 40, 40, true},
+		{"truncated, regrown past offset only", readOffset{Offset: 100, Size: 300}, 120, 120, true},
 	} {
-		got, ok := pmPaneID(panes, tc.tab)
-		if got != tc.want || ok != tc.ok {
-			t.Errorf("pmPaneID(%q) = %q, %v; want %q, %v", tc.tab, got, ok, tc.want, tc.ok)
-		}
-	}
-}
-
-func TestShouldNudge(t *testing.T) {
-	t0 := time.Date(2026, 10, 15, 9, 0, 0, 0, time.UTC)
-	reqs := []Request{{At: t0}, {At: t0.Add(time.Minute)}}
-	for _, tc := range []struct {
-		name    string
-		state   nudgeState
-		pending []Request
-		want    bool
-	}{
-		{"no mail", nudgeState{}, nil, false},
-		{"first mail", nudgeState{}, reqs, true},
-		{"already nudged", nudgeState{DefaultPMName: t0.Add(time.Minute)}, reqs, false},
-		{"newer mail", nudgeState{DefaultPMName: t0}, reqs, true},
-	} {
-		if got := shouldNudge(tc.state, DefaultPMName, tc.pending); got != tc.want {
+		if got := nudgeDue(tc.st, tc.end, tc.size); got != tc.want {
 			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
 		}
 	}
 }
 
-// stubNudge replaces the zellij seams and records every action run.
-func stubNudge(t *testing.T) *[][]string {
+// nudgeStub replaces the process registry and the zellij calls. By default
+// every PM in pms runs in session "s" with an agent pane in its tab, and no tab
+// is focused.
+type nudgeStub struct {
+	procs     []ProcRecord
+	listed    int
+	dead      bool
+	focused   string
+	noPane    map[string]bool // tab → no agent pane there
+	submitErr error
+	submitted []string // tabs typed into
+}
+
+func stubNudge(t *testing.T, pms ...string) *nudgeStub {
 	t.Helper()
-	var calls [][]string
-	oldRun, oldIn, oldSleep := runZellijAction, inZellij, nudgeSleep
-	runZellijAction = func(args ...string) ([]byte, error) {
-		calls = append(calls, args)
-		if args[0] == "list-panes" {
-			return []byte(panesFixture), nil
-		}
-		return nil, nil
+	s := &nudgeStub{noPane: map[string]bool{}}
+	for _, name := range pms {
+		s.procs = append(s.procs, ProcRecord{PID: 1, PM: name, Session: "s"})
 	}
-	inZellij = func() bool { return true }
-	nudgeSleep = func(time.Duration) {}
-	t.Cleanup(func() { runZellijAction, inZellij, nudgeSleep = oldRun, oldIn, oldSleep })
-	return &calls
+	paneTab := map[int]string{}
+	oldList, oldAlive, oldFocus, oldPane, oldSubmit := listProcs, sessionAlive, focusedTab, agentPane, submitToPane
+	listProcs = func() []ProcRecord { s.listed++; return s.procs }
+	sessionAlive = func(string) (bool, error) { return !s.dead, nil }
+	focusedTab = func(string) string { return s.focused }
+	agentPane = func(_, tab string) (zellij.Pane, bool, error) {
+		if s.noPane[tab] {
+			return zellij.Pane{}, false, nil
+		}
+		id := len(paneTab) + 1
+		paneTab[id] = tab
+		return zellij.Pane{ID: id, TabName: tab}, true, nil
+	}
+	submitToPane = func(session string, id int, text string) error {
+		if session != "s" || text != PMNudgeText {
+			t.Errorf("submitToPane(%q, %d, %q)", session, id, text)
+		}
+		s.submitted = append(s.submitted, paneTab[id])
+		return s.submitErr
+	}
+	t.Cleanup(func() {
+		listProcs, sessionAlive, focusedTab, agentPane, submitToPane = oldList, oldAlive, oldFocus, oldPane, oldSubmit
+	})
+	return s
+}
+
+func appendReq(t *testing.T, r Request) {
+	t.Helper()
+	if r.Text == "" {
+		r.Text = "hi"
+	}
+	if err := AppendRequest(r); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// nudge runs NudgePMs and returns the tabs it typed into this call.
+func nudge(t *testing.T, s *nudgeStub) []string {
+	t.Helper()
+	s.submitted = nil
+	if _, err := NudgePMs(); err != nil {
+		t.Fatal(err)
+	}
+	return s.submitted
 }
 
 func TestNudgePMsOncePerMail(t *testing.T) {
 	testutil.IsolateHome(t)
-	calls := stubNudge(t)
-	top := PM{Name: DefaultPMName}
-	t0 := time.Now().UTC()
-	pending := map[string][]Request{DefaultPMName: {{At: t0, Text: "hi"}}}
+	s := stubNudge(t, DefaultPMName)
 
-	if err := NudgePMs([]PM{top}, pending); err != nil {
-		t.Fatal(err)
+	appendReq(t, Request{From: fromCLI})
+	if got := nudge(t, s); !reflect.DeepEqual(got, []string{PMTab}) {
+		t.Fatalf("first mail typed into %v, want [%s]", got, PMTab)
 	}
-	want := [][]string{
-		{"list-panes", "--json", "--tab"},
-		{"write-chars", "--pane-id", topPMPane, PMNudgeText},
-		{"send-keys", "--pane-id", topPMPane, "Enter"},
+	if got := nudge(t, s); len(got) != 0 {
+		t.Fatalf("second call for the same mail typed into %v", got)
 	}
-	if !reflect.DeepEqual(*calls, want) {
-		t.Fatalf("calls = %v, want %v", *calls, want)
-	}
-
-	*calls = nil
-	if err := NudgePMs([]PM{top}, pending); err != nil {
-		t.Fatal(err)
-	}
-	if len(*calls) != 0 {
-		t.Fatalf("second round for the same mail ran %v", *calls)
-	}
-
-	pending[DefaultPMName] = append(pending[DefaultPMName], Request{At: t0.Add(time.Second), Text: "more"})
-	if err := NudgePMs([]PM{top}, pending); err != nil {
-		t.Fatal(err)
-	}
-	if len(*calls) != 3 {
-		t.Fatalf("new mail ran %v, want a nudge", *calls)
+	appendReq(t, Request{From: fromCLI, Text: "more"})
+	if got := nudge(t, s); len(got) != 1 {
+		t.Fatalf("new mail typed into %v, want one nudge", got)
 	}
 }
 
-// A PM with no live agent pane in this session is left for a sidebar in the
-// session that has one: nothing is typed and its state does not advance.
-func TestNudgePMsSkipsMissingPane(t *testing.T) {
+// A forwarded reply keeps the time its agent wrote it, which may be before the
+// last nudge, or — written by an agent — anywhere at all. Neither may decide.
+func TestNudgePMsIgnoresRequestTimes(t *testing.T) {
 	testutil.IsolateHome(t)
-	calls := stubNudge(t)
-	pm := PM{Name: "gone"}
-	pending := map[string][]Request{pm.Name: {{At: time.Now().UTC(), Text: "hi"}}}
-	if err := NudgePMs([]PM{pm}, pending); err != nil {
-		t.Fatal(err)
+	s := stubNudge(t, DefaultPMName)
+	now := time.Now().UTC()
+
+	appendReq(t, Request{From: fromCLI, At: now})
+	nudge(t, s)
+	appendReq(t, Request{From: "st-x-main", At: now.Add(-time.Hour)})
+	if got := nudge(t, s); len(got) != 1 {
+		t.Fatalf("older-stamped mail typed into %v, want a nudge", got)
 	}
-	for _, c := range *calls {
-		if c[0] != "list-panes" {
-			t.Errorf("ran %s", strings.Join(c, " "))
-		}
-	}
-	state := nudgeState{}
-	_ = readJSON(PMNudgeStatePath(), &state)
-	if !state[pm.Name].IsZero() {
-		t.Errorf("state advanced to %v, so the nudge would never be retried", state[pm.Name])
+	appendReq(t, Request{From: "st-x-main", At: now.AddDate(70, 0, 0)})
+	nudge(t, s)
+	appendReq(t, Request{From: fromCLI, At: now})
+	if got := nudge(t, s); len(got) != 1 {
+		t.Fatalf("mail after a future-stamped one typed into %v, want a nudge", got)
 	}
 }
 
-// With several PMs, mail reaches only the pane of the PM it is for: requests go
-// through the real queue and PendingRequests' routing, exactly as the sidebar
-// gathers them, and only zellij is stubbed. The fixture has a live agent pane
-// for the top PM (terminal_3) and for "ops" (terminal_9).
 func TestNudgePMsOnlyTheAddressee(t *testing.T) {
 	testutil.IsolateHome(t)
-	calls := stubNudge(t)
-	if _, err := AddPM("ops", ""); err != nil {
-		t.Fatal(err)
-	}
-	pms, err := LoadPMs()
+	ops, err := AddPM("ops", "")
 	if err != nil {
 		t.Fatal(err)
 	}
+	s := stubNudge(t, DefaultPMName, ops.Name)
 
-	// nudged runs one sidebar round and returns the panes typed into.
-	nudged := func() []string {
-		t.Helper()
-		pending := map[string][]Request{}
-		for _, p := range pms {
-			reqs, _, err := PendingRequests(p.Name)
-			if err != nil {
-				t.Fatal(err)
-			}
-			pending[p.Name] = reqs
-		}
-		*calls = nil
-		if err := NudgePMs(pms, pending); err != nil {
-			t.Fatal(err)
-		}
-		var panes []string
-		for _, c := range *calls {
-			if c[0] == "write-chars" {
-				panes = append(panes, c[2])
-			}
-		}
-		return panes
+	appendReq(t, Request{From: fromCLI}) // unaddressed: the top PM's
+	if got := nudge(t, s); !reflect.DeepEqual(got, []string{PMTab}) {
+		t.Fatalf("typed into %v, want only [%s]", got, PMTab)
 	}
-	queue := func(to, text string) {
-		t.Helper()
-		if err := AppendRequest(Request{From: "test", To: to, Text: text}); err != nil {
-			t.Fatal(err)
-		}
+	// Mail for ops moves the queue on; the top PM, still holding unread mail,
+	// must not be nudged again for it.
+	appendReq(t, Request{From: fromCLI, To: ops.Name})
+	if got := nudge(t, s); !reflect.DeepEqual(got, []string{ops.Tab()}) {
+		t.Fatalf("typed into %v, want only [%s]", got, ops.Tab())
 	}
+}
 
-	queue("ops", "for ops")
-	if got := nudged(); !reflect.DeepEqual(got, []string{opsPMPane}) {
-		t.Fatalf("mail for ops nudged %v, want only ops' pane", got)
+// Every reason not to type leaves the state where it was, so the nudge comes
+// once the reason clears.
+func TestNudgePMsSkipsAndRetries(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		block func(*nudgeStub)
+		clear func(*nudgeStub)
+	}{
+		{"no live process",
+			func(s *nudgeStub) { s.procs[0].Session = "" },
+			func(s *nudgeStub) { s.procs[0].Session = "s" }},
+		{"session gone",
+			func(s *nudgeStub) { s.dead = true },
+			func(s *nudgeStub) { s.dead = false }},
+		{"tab focused",
+			func(s *nudgeStub) { s.focused = PMTab },
+			func(s *nudgeStub) { s.focused = "elsewhere" }},
+		{"no agent pane",
+			func(s *nudgeStub) { s.noPane[PMTab] = true },
+			func(s *nudgeStub) { delete(s.noPane, PMTab) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testutil.IsolateHome(t)
+			s := stubNudge(t, DefaultPMName)
+			appendReq(t, Request{From: fromCLI})
+			tc.block(s)
+			if got := nudge(t, s); len(got) != 0 {
+				t.Fatalf("typed into %v while blocked", got)
+			}
+			tc.clear(s)
+			if got := nudge(t, s); len(got) != 1 {
+				t.Fatalf("typed into %v once clear, want a nudge", got)
+			}
+		})
 	}
-	queue("", "for whoever is on top")
-	if got := nudged(); !reflect.DeepEqual(got, []string{topPMPane}) {
-		t.Fatalf("unaddressed mail nudged %v, want only the top PM's pane", got)
+}
+
+// A failed submit is reported but not retried: whatever part of it reached the
+// prompt would be typed a second time.
+func TestNudgePMsSubmitErrorAdvances(t *testing.T) {
+	testutil.IsolateHome(t)
+	s := stubNudge(t, DefaultPMName)
+	s.submitErr = errors.New("zellij write: boom")
+	appendReq(t, Request{From: fromCLI})
+
+	nudged, err := NudgePMs()
+	if err == nil || !strings.Contains(err.Error(), "boom") || len(nudged) != 0 {
+		t.Fatalf("NudgePMs = %v, %v; want the submit error and nobody nudged", nudged, err)
 	}
-	queue(DefaultPMName, "for the top PM by name")
-	if got := nudged(); !reflect.DeepEqual(got, []string{topPMPane}) {
-		t.Fatalf("mail for the top PM nudged %v, want only its pane", got)
+	s.submitErr = nil
+	if got := nudge(t, s); len(got) != 0 {
+		t.Fatalf("retried a failed nudge into %v", got)
 	}
-	if got := nudged(); len(got) != 0 {
-		t.Fatalf("a round with no new mail nudged %v", got)
-	}
-	queue("ops", "ops again")
-	queue("", "top again")
-	if got := nudged(); !reflect.DeepEqual(got, []string{topPMPane, opsPMPane}) {
-		t.Fatalf("mail for both nudged %v, want each pane once", got)
+}
+
+// With nothing due there is no reason to run ps once per process every tick.
+func TestNudgePMsNothingDueListsNoProcs(t *testing.T) {
+	testutil.IsolateHome(t)
+	s := stubNudge(t, DefaultPMName)
+	nudge(t, s)
+	if s.listed != 0 {
+		t.Fatalf("listed processes %d times with no mail", s.listed)
 	}
 }

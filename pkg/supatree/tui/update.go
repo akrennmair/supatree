@@ -1113,28 +1113,19 @@ func (m *Model) refreshAttentionCmd() tea.Cmd {
 }
 
 // refreshPMPendingCmd counts the requests each PM has not read yet, for the
-// badges on the PM rows, and — with pm_nudge on — nudges any PM with new mail
-// (supatree.NudgePMs). Off
-// the main loop because it scans the unread tail of the queue and shells out to
-// zellij; an unreadable queue shows no badge rather than an error, and a failed
-// nudge is retried next round rather than reported.
+// badges on the PM rows. Off the main loop because it scans the unread tail of the
+// queue; an unreadable queue shows no badge rather than an error.
 func (m *Model) refreshPMPendingCmd() tea.Cmd {
-	nudge := m.stCfg != nil && m.stCfg.PMNudge
 	return func() tea.Msg {
 		pms, err := supatree.LoadPMs()
 		if err != nil {
 			return pmPendingMsg{}
 		}
 		n := map[string]int{}
-		pending := map[string][]supatree.Request{}
 		for _, p := range pms {
 			if reqs, _, err := supatree.PendingRequests(p.Name); err == nil {
 				n[p.Name] = len(reqs)
-				pending[p.Name] = reqs
 			}
-		}
-		if nudge {
-			_ = supatree.NudgePMs(pms, pending)
 		}
 		return pmPendingMsg{n: n}
 	}

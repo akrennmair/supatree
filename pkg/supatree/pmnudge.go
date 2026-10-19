@@ -1,155 +1,128 @@
 package supatree
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
-	"os/exec"
-	"strconv"
-	"time"
 
-	"github.com/panamafrancis/workbench/pkg/config"
 	"github.com/panamafrancis/workbench/pkg/zellij"
 )
 
-// PMNudgeText is what the sidebar types into a PM's prompt when mail arrives.
-// It is fixed on purpose, like KickoffPrompt: the requests themselves ride in
-// the queue, so nothing anyone queued ever reaches a command line or a prompt.
-const PMNudgeText = "You got mail."
+// PMNudgeText is what the watcher types into a PM's prompt when mail arrives.
+// It is fixed on purpose, like WakePrompt: the requests themselves ride in the
+// queue, so nothing anyone queued ever reaches a prompt.
+const PMNudgeText = "You have new requests. Call the `requests` tool and act on them."
 
-// nudgeEnterDelay separates the text from the Enter that submits it. Sent back
-// to back, the two can arrive as one burst that the agent's input treats as a
-// paste — leaving a newline in the prompt instead of submitting it.
-const nudgeEnterDelay = 150 * time.Millisecond
-
-// Seams for tests: the zellij CLI and the pause.
+// Seams for tests: the process registry and the zellij calls.
 var (
-	runZellijAction = func(args ...string) ([]byte, error) {
-		return exec.Command("zellij", append([]string{"action"}, args...)...).Output()
-	}
-	inZellij   = zellij.IsInZellij
-	nudgeSleep = time.Sleep
+	listProcs    = ListProcs
+	sessionAlive = zellij.SessionAlive
+	focusedTab   = zellij.FocusedTab
+	agentPane    = zellij.AgentPane
+	submitToPane = zellij.SubmitToPane
 )
 
-// zellijPane is the part of `zellij action list-panes --json` we read.
-type zellijPane struct {
-	ID       int    `json:"id"`
-	IsPlugin bool   `json:"is_plugin"`
-	Title    string `json:"title"`
-	Exited   bool   `json:"exited"`
-	TabName  string `json:"tab_name"`
-}
+// nudgeState maps a PM name to the queue position of the newest request it was
+// nudged about: the byte offset just past it, and the queue size then. An
+// offset, not the request's At — a forwarded message keeps the time its tree
+// agent wrote into it, which can be older than the last nudge (so it would
+// never nudge) or far in the future (so nothing after it would).
+type nudgeState map[string]readOffset
 
-func parsePanes(data []byte) ([]zellijPane, error) {
-	var panes []zellijPane
-	if err := json.Unmarshal(data, &panes); err != nil {
-		return nil, fmt.Errorf("parse list-panes: %w", err)
+// nudgeDue reports whether the newest request ending at end is past the one
+// st records. A queue shorter than st was taken against has been truncated or
+// rotated, so st means nothing — the same rule readQueueFrom applies to a
+// read offset.
+func nudgeDue(st readOffset, end, size int64) bool {
+	if size < st.Offset || size < st.Size {
+		return end > 0
 	}
-	return panes, nil
+	return end > st.Offset
 }
 
-// pmPaneID finds the agent pane of the tab named tab, as a --pane-id argument.
-// The tab layout names the agent pane after its tab and the other pane
-// "sidebar"; a pane whose title has since changed is still the agent if it is
-// the only other live terminal there.
-func pmPaneID(panes []zellijPane, tab string) (string, bool) {
-	var others []zellijPane
-	for _, p := range panes {
-		if p.IsPlugin || p.Exited || p.TabName != tab {
+// NudgePMs types PMNudgeText into the agent pane of every running PM with
+// mail it has not been nudged about, so it starts a turn and drains `requests`
+// rather than waiting for a human to say something. It returns the PMs it
+// nudged. The watcher calls it on its launch tick, right after forwarding
+// tree agents' replies into the queue; it is the only caller, which is what
+// lets the state go unlocked.
+//
+// A PM is skipped, and retried next call because its state is not advanced,
+// when it has no live process, its session is gone, its tab is the focused
+// one (the human is looking at it, badge included), or no pane in its tab is
+// certainly the agent: text typed into the wrong terminal is worse than a
+// nudge that never comes. A nudge is attempted at most once — the state
+// advances even when submitting fails, since a half-delivered one retyped
+// would leave the text twice in the prompt.
+func NudgePMs() ([]string, error) {
+	pms, err := LoadPMs()
+	if err != nil {
+		return nil, err
+	}
+	size := queueSize()
+	state := nudgeState{}
+	_ = readJSON(PMNudgeStatePath(), &state) // missing or torn: at most one extra nudge
+
+	type dueNudge struct {
+		pm  PM
+		end int64
+	}
+	var due []dueNudge
+	var errs []error
+	for _, p := range pms {
+		n, end, err := pendingRequestsEnd(p, pms)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("pending for %s: %w", p.Name, err))
 			continue
 		}
-		if p.Title == tab {
-			return "terminal_" + strconv.Itoa(p.ID), true
-		}
-		if p.Title != "sidebar" {
-			others = append(others, p)
+		if n > 0 && nudgeDue(state[p.Name], end, size) {
+			due = append(due, dueNudge{p, end})
 		}
 	}
-	if len(others) == 1 {
-		return "terminal_" + strconv.Itoa(others[0].ID), true
+	if len(due) == 0 {
+		return nil, errors.Join(errs...)
 	}
-	return "", false
-}
 
-// nudgeState maps a PM name to the time of the newest request it was nudged
-// about. Keying on the PM's own newest request means mail for another PM never
-// re-nudges it, a rotated queue cannot confuse it, and a drained queue has no
-// pending request to compare.
-type nudgeState map[string]time.Time
-
-func shouldNudge(state nudgeState, pm string, pending []Request) bool {
-	if len(pending) == 0 {
-		return false
-	}
-	return pending[len(pending)-1].At.After(state[pm])
-}
-
-// NudgePMs types PMNudgeText + Enter into the pane of every PM that has mail
-// it has not been nudged about, so it starts a turn and drains `requests`
-// rather than waiting for a human to say something.
-//
-// One sidebar runs per tab, so the round is elected by a try-lock and recorded
-// in PMNudgeStatePath: a busy lock means another sidebar is doing it. A PM whose
-// tab is not in this session is skipped — and retried next round, since its
-// state is not advanced. A focused tab is not skipped: the nudge can land in a
-// draft the human is typing, which is why the whole thing is opt-in
-// (Config.PMNudge). Telling focus apart from the outside proved unreliable.
-func NudgePMs(pms []PM, pending map[string][]Request) error {
-	if !inZellij() {
-		return nil
-	}
-	err := config.TryFileLock(PMNudgeLockPath(), func() error {
-		state := nudgeState{}
-		_ = readJSON(PMNudgeStatePath(), &state) // missing or torn: at most one extra nudge
-		var due []PM
-		for _, p := range pms {
-			if shouldNudge(state, p.Name, pending[p.Name]) {
-				due = append(due, p)
-			}
+	sessions := map[string]string{}
+	for _, r := range listProcs() {
+		if r.IsPM() && r.Session != "" {
+			sessions[r.PM] = r.Session
 		}
-		if len(due) == 0 {
-			return nil
+	}
+	var nudged []string
+	changed := false
+	for _, d := range due {
+		session, ok := sessions[d.pm.Name]
+		if !ok {
+			continue
 		}
-		out, err := runZellijAction("list-panes", "--json", "--tab")
+		// dump-layout to a server that is shutting down makes zellij panic.
+		if alive, err := sessionAlive(session); err != nil || !alive {
+			continue
+		}
+		tab := d.pm.Tab()
+		if focusedTab(session) == tab {
+			continue
+		}
+		pane, ok, err := agentPane(session, tab)
 		if err != nil {
-			return fmt.Errorf("list panes: %w", err)
+			errs = append(errs, fmt.Errorf("nudge %s: %w", d.pm.Name, err))
+			continue
 		}
-		panes, err := parsePanes(out)
-		if err != nil {
-			return err
+		if !ok {
+			continue
 		}
-		var errs []error
-		changed := false
-		for _, p := range due {
-			id, ok := pmPaneID(panes, p.Tab())
-			if !ok {
-				continue
-			}
-			if err := typeInto(id, PMNudgeText); err != nil {
-				errs = append(errs, fmt.Errorf("nudge %s: %w", p.Name, err))
-				continue
-			}
-			reqs := pending[p.Name]
-			state[p.Name] = reqs[len(reqs)-1].At
-			changed = true
+		state[d.pm.Name] = readOffset{Offset: d.end, Size: size}
+		changed = true
+		if err := submitToPane(session, pane.ID, PMNudgeText); err != nil {
+			errs = append(errs, fmt.Errorf("nudge %s: %w", d.pm.Name, err))
+			continue
 		}
-		if changed {
-			errs = append(errs, writeJSONAtomic(PMNudgeStatePath(), state))
-		}
-		return errors.Join(errs...)
-	})
-	if errors.Is(err, config.ErrLockBusy) {
-		return nil
+		nudged = append(nudged, d.pm.Name)
 	}
-	return err
-}
-
-// typeInto writes text into a pane and submits it, without focusing the pane.
-func typeInto(paneID, text string) error {
-	if _, err := runZellijAction("write-chars", "--pane-id", paneID, text); err != nil {
-		return err
+	if changed {
+		if err := writeJSONAtomic(PMNudgeStatePath(), state); err != nil {
+			errs = append(errs, err)
+		}
 	}
-	nudgeSleep(nudgeEnterDelay)
-	_, err := runZellijAction("send-keys", "--pane-id", paneID, "Enter")
-	return err
+	return nudged, errors.Join(errs...)
 }
