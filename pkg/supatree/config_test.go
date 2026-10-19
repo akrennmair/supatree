@@ -1,6 +1,7 @@
 package supatree
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -138,5 +139,44 @@ func TestLoadWithoutWorkbench(t *testing.T) {
 	}
 	if len(c.Stacks) != 0 || len(c.Models) != 0 {
 		t.Errorf("fresh config = %+v", c)
+	}
+}
+
+func TestModelKeysSorted(t *testing.T) {
+	c := &Config{Models: map[string]config.Model{"zeta": {Binary: "z"}, "alpha": {Binary: "a"}}}
+	if got := c.ModelKeys(); len(got) != 2 || got[0] != "alpha" || got[1] != "zeta" {
+		t.Errorf("ModelKeys() = %v, want [alpha zeta]", got)
+	}
+}
+
+func TestModelInstalled(t *testing.T) {
+	c := &Config{Models: map[string]config.Model{
+		"here":    {Binary: "sh"},
+		"missing": {Binary: "no-such-agent-cli-xyz"},
+	}}
+	if !c.ModelInstalled("here") {
+		t.Error("sh should be installed")
+	}
+	if c.ModelInstalled("missing") || c.ModelInstalled("unknown") {
+		t.Error("a missing binary or unknown key counted as installed")
+	}
+}
+
+// The built-in codex entry runs under supatree's codex profile, without
+// Codex's own sandbox (nono is the sandbox) and without the shared app-server
+// daemon, which would run its commands outside nono.
+func TestDefaultCodexModel(t *testing.T) {
+	m, err := (&Config{}).Model(codexModelKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.NonoProfile != CodexProfileName {
+		t.Errorf("codex runs under %q, want %q", m.NonoProfile, CodexProfileName)
+	}
+	if !slices.Contains(m.Args, "--no-daemon") || !slices.Contains(m.Args, "--dangerously-bypass-approvals-and-sandbox") {
+		t.Errorf("codex args = %v", m.Args)
+	}
+	if p := CodexProfile(); len(p.Extends) != 1 || p.Extends[0] != "codex" {
+		t.Errorf("codex profile extends %v, want nono's codex package", p.Extends)
 	}
 }

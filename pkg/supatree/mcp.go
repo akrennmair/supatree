@@ -248,6 +248,7 @@ func MCPServer(version string) *mcp.Server {
 					argTree:      mcp.StringProp("Supatree name"),
 					"agent":      mcp.StringProp("Agent name (default main)"),
 					"brief":      mcp.StringProp("What it should do. Omit on a review tree for the default review brief; omit elsewhere to start it on whatever mail is already waiting"),
+					"model":      mcp.StringProp("Which coding agent a NEW agent runs on: a key under `models:` in the supatree config, e.g. claude or codex (default: the tree's model). Only when the human asked for one. An existing agent keeps its model; `agents` shows each one's"),
 					argAskedName: mcp.BoolProp("The human asked for this in this turn. Set it only then — it is what distinguishes a request from your own initiative, and below autonomy 'auto' it is the difference between doing this and reporting that you could"),
 				}, []string{argTree}),
 				Handler: handleStartAgent,
@@ -1385,7 +1386,13 @@ func handleStartAgent(args map[string]any) (string, bool) {
 	}
 	agent, _ := args["agent"].(string)
 	brief, _ := args["brief"].(string)
-	out, err := startAgent(inst, agent, brief)
+	model, _ := args["model"].(string)
+	if model != "" {
+		if _, err := cfg.Model(model); err != nil {
+			return fmt.Sprintf("unknown model %q: the configured models are %s", model, strings.Join(cfg.ModelKeys(), ", ")), true
+		}
+	}
+	out, err := startAgent(inst, agent, brief, model)
 	if err != nil {
 		return err.Error(), true
 	}
@@ -1395,7 +1402,7 @@ func handleStartAgent(args map[string]any) (string, bool) {
 // startAgentReport is startAgent for a caller that has already succeeded at
 // something (creating the tree) and must not report that as a failure.
 func startAgentReport(inst *Instance, agent, brief string) string {
-	out, err := startAgent(inst, agent, brief)
+	out, err := startAgent(inst, agent, brief, "")
 	if err != nil {
 		return fmt.Sprintf("the tree exists, but its agent was not started: %v. Call start_agent to retry.", err)
 	}
@@ -1410,11 +1417,26 @@ func startAgentReport(inst *Instance, agent, brief string) string {
 // first because message delivery to a name nobody launched yet would otherwise
 // be refused by message_agent later, and because the launch resumes by the
 // session id registered here.
-func startAgent(inst *Instance, agent, brief string) (string, error) {
+//
+// model is the models key a new agent runs on, "" for the tree's own. An
+// agent already registered keeps the model it has, and asking for another is
+// refused.
+func startAgent(inst *Instance, agent, brief, model string) (string, error) {
 	if agent == "" {
 		agent = MainAgent
 	}
-	if _, _, err := EnsureAgent(inst.Root, inst.Name, agent, inst.Model, time.Now()); err != nil {
+	if err := checkMainModel(agent, model, inst.Model); err != nil {
+		return "", err
+	}
+	key := inst.Model
+	if model != "" {
+		key = model
+	}
+	a, _, err := EnsureAgent(inst.Root, inst.Name, agent, key, time.Now())
+	if err != nil {
+		return "", err
+	}
+	if err := checkAgentModel(a, model); err != nil {
 		return "", err
 	}
 	if strings.TrimSpace(brief) == "" && inst.Reviewing() {

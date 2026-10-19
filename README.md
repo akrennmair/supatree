@@ -255,6 +255,168 @@ models:
     agent_name_args: ["--name", "{agent_name}"]
 ```
 
+### Agents on other CLIs
+
+A new agent can run on any entry in `models:`, and keeps that model on every
+reopen:
+
+- In the sidebar, `a` asks for the agent's name, then for its model, starting
+  on the tree's own. Models whose binary is not on `PATH` are listed as not
+  installed and cannot be picked. The picker is skipped when only one model is
+  configured, and for an agent that already exists.
+- `supatree open <tree> --agent <name> --model <key>` does the same from a
+  shell.
+- A PM's `start_agent` takes an optional `model`.
+
+A tree's main agent always runs on the tree's model. Asking for another model
+for an agent that already exists is refused: its session belongs to the CLI
+it was started on.
+
+Each agent row in the sidebar shows its model's `icon` (claude `✻`, codex
+`◎` by default). `icon` is any string, so plain Unicode, a Nerd Font glyph or
+an emoji all work:
+
+```yaml
+models:
+  codex:
+    icon: "🤖"
+```
+
+A model with no icon is named instead (`reviewer · codex`), when it is not
+the tree's own.
+
+Only `claude` and `codex` are supported. Other CLIs can be added under
+`models:`, but resuming their sessions won't work.
+
+An agent resumes its own session by the ID recorded in `agents.yml`. Claude
+takes that ID at launch (`new_session_args`). Codex picks its own, so a model
+with `session_store: codex` is launched fresh, and supatree then finds the
+session that started in the tree root after that launch (the earliest one no
+other agent owns) and records its ID. Later opens resume it with
+`resume_session_args` (`["resume", "{session_id}"]`), so several Codex agents
+can share a tree. Fresh Codex launches in one tree are serialized: a second
+agent is refused until the first has written a session record that can be
+bound to it. If the first agent never writes one, retry after it starts or
+remove that failed agent before launching another.
+
+```yaml
+# ~/.config/supatree/config.yml
+models:
+  codex:
+    binary: codex
+    resume_session_args: ["resume", "{session_id}"]
+    prompt_args: ["{prompt}"]
+    session_store: codex
+```
+
+#### Setting up Codex
+
+For Codex agents:
+
+1. **Install and log in.** Install the `codex` CLI so it is on `PATH`, then run
+   `codex login`.
+
+2. **Install nono's codex package, then re-run `supatree init`.**
+
+   ```sh
+   nono pull nolabs-ai/codex && supatree init
+   ```
+
+   The package's `codex` profile grants Codex its state (`~/.codex`) and the
+   keychain its login lives in. `supatree init` then writes `supatree-codex`
+   on top of it, with what every supatree agent gets (toolchain, SSH agent,
+   supatree's config read-only, the agent cache). Tree access is still
+   granted per launch.
+
+   The package also appends a block to `~/.codex/config.toml` whose first key,
+   `developer_instructions`, lands in whatever `[section]` precedes it (TOML
+   reads a key as belonging to the last header above it). If Codex then fails
+   with `invalid type: string ..., expected u32 in tui.model_availability_nux`
+   (or similar), move `developer_instructions` above the first `[...]` header.
+
+   The built-in codex model runs under `supatree-codex` with
+   `--dangerously-bypass-approvals-and-sandbox --no-daemon`. A `codex` entry
+   saved in your `config.yml` before this keeps its own `nono_profile` and
+   `args`, so set them:
+
+   ```yaml
+   # ~/.config/supatree/config.yml
+   models:
+     codex:
+       nono_profile: supatree-codex
+       args: ["--dangerously-bypass-approvals-and-sandbox", "--no-daemon"]
+   ```
+
+   - `--dangerously-bypass-approvals-and-sandbox`: nono is the sandbox, and
+     Codex's own cannot nest inside it.
+   - `--no-daemon`: without it Codex hands its session to the shared
+     app-server daemon (the ChatGPT app and earlier `codex` runs start one),
+     which runs commands and MCP servers **outside nono** and without the
+     agent's `SUPATREE_*` environment.
+
+   The other codex fields (`resume_session_args`, `prompt_args`,
+   `session_store`, `icon`) are filled in from the built-in defaults when
+   left out.
+
+   Every profile supatree and workbench generate, Claude's included, denies
+   that daemon's sockets (`/private/tmp/codex-daemon-<uid>`,
+   `~/.codex/app-server-daemon`): on macOS nono lets a sandboxed process
+   connect to any Unix socket it can name, and an agent that reaches the
+   daemon can have it run commands with your full permissions. A hand-written
+   profile must deny them too.
+
+3. **Let Codex's commands see the SSH agent and the sandbox.** Codex builds a
+   fresh environment for every command it runs from
+   `[shell_environment_policy]` in `~/.codex/config.toml`. Two variables must
+   survive it:
+   - `SSH_AUTH_SOCK`: without it, `git push` has no agent socket, and ssh falls
+     back to reading the private key file, which the sandbox refuses
+     (`Load key ...: Operation not permitted`).
+   - `NONO_CAP_FILE`: without it, `nono why --self` reports `NOT SANDBOXED`,
+     so the agent cannot tell a sandbox denial from any other error.
+   - `GOPATH`, when you set one: without it Go falls back to `~/go`, which
+     the sandbox does not grant (it grants your `GOPATH`), so nothing builds.
+     `GOPRIVATE`/`GONOSUMDB` likewise, for private modules.
+
+   `inherit = "core"` always drops these, since the core set includes none of
+   them, even when `include_only` lists them. With a restrictive policy,
+   allow what agents need and keep credentials out, e.g.:
+
+   ```toml
+   [shell_environment_policy]
+   inherit = "all"
+   include_only = ["PATH", "HOME", "USER", "SHELL", "TMPDIR", "LANG",
+                   "SSH_AUTH_SOCK", "NONO_CAP_FILE", "GO*", "DOCKER_HOST", "SUPATREE*"]
+   ```
+
+   `supatree doctor` checks this whenever a codex model is configured.
+
+4. **Register supatree's MCP server with Codex, forwarding supatree's
+   environment.** The tools find their tree and agent from `SUPATREE_*`
+   variables that supatree sets at launch, but Codex starts MCP servers with
+   only a minimal environment. Register the server:
+
+   ```sh
+   codex mcp add supatree -- "$(which supatree)" mcp
+   ```
+
+   then add `env_vars` to the entry it wrote in `~/.codex/config.toml`
+   (`codex mcp add` has no option for it: `--env` only sets fixed values).
+   Without it every tree tool answers "Not inside a supatree session":
+
+   ```toml
+   # ~/.codex/config.toml
+   [mcp_servers.supatree]
+   command = "/path/to/supatree"   # written by codex mcp add
+   args = ["mcp"]
+   env_vars = ["SUPATREE", "SUPATREE_NAME", "SUPATREE_ROOT", "SUPATREE_MEMBERS",
+               "SUPATREE_BRANCH_SLUG", "SUPATREE_AGENT", "SUPATREE_MODE",
+               "SUPATREE_MEMBER", "SUPATREE_PM", "SUPATREE_PM_NAME"]
+   ```
+
+5. **Check it.** In a tree, press `a`, name the agent and pick codex, then ask
+   it to call `supatree_info`: it should list the tree's repositories.
+
 ## Notifications
 
 `supatree watch` is the single background poller. Each round it refreshes PR status on the shared staleness gate, derives the same summary `supatree status` shows, diffs it against the previous round, appends what changed to the ledger (`~/.local/state/supatree/ledger/events.jsonl`), and delivers the few events that warrant interrupting you as desktop notifications.

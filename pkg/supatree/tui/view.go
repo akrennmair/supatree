@@ -155,7 +155,14 @@ func (m *Model) renderRow(r row, selected bool) string {
 		if m.openTabs[supatree.TabName(r.tree, r.label)] {
 			icon = styleRunning.Render("●")
 		}
-		return sel(selected, fmt.Sprintf("      %s %s", icon, r.label))
+		line := fmt.Sprintf("      %s %s", icon, r.label)
+		switch {
+		case r.icon != "":
+			line += " " + r.icon
+		case r.model != "":
+			line += styleSub.Render(" · " + r.model)
+		}
+		return sel(selected, line)
 	case rowMember:
 		return sel(selected, m.renderMember(r))
 	}
@@ -286,6 +293,28 @@ func (m *Model) footer() string {
 	switch m.mode {
 	case modeNewAgent:
 		return m.inputPrompt("new agent: ")
+	case modeNewAgentModel:
+		var b strings.Builder
+		b.WriteString(styleSub.Render(wrapText(fmt.Sprintf("new agent %q — pick model (↑/↓, enter, esc):", m.actionAgent), m.width)))
+		for i, c := range m.models {
+			label := c.key
+			if c.icon != "" {
+				label = c.icon + " " + label
+			}
+			if c.isDefault {
+				label += " (tree default)"
+			}
+			b.WriteString("\n")
+			switch {
+			case !c.installed:
+				b.WriteString("  " + styleMuted.Render(label+" — not installed"))
+			case i == m.modelCursor:
+				b.WriteString(styleSelected.Render("› " + label))
+			default:
+				b.WriteString("  " + styleRow.Render(label))
+			}
+		}
+		return b.String()
 	case modeNewTree:
 		var b strings.Builder
 		b.WriteString(styleSub.Render(wrapText(m.newTreeLabel()+" — pick stack (↑/↓, enter, esc):", m.width)))

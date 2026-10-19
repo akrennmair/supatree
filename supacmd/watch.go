@@ -388,7 +388,7 @@ func newLaunchGate(cfg *supatree.Config, insts []*supatree.Instance, now time.Ti
 		for _, a := range agents {
 			tab := supatree.TabName(inst.Name, a.Name)
 			_, recent := recentLaunches[tab]
-			if live[tab] && (recent || supatree.AgentBusy(inst.Root, a, now)) {
+			if live[tab] && (recent || supatree.AgentBusy(cfg, inst.Root, a, now)) {
 				gate.Busy++
 			}
 		}

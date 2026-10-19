@@ -11,7 +11,6 @@ import (
 
 	"github.com/panamafrancis/workbench/pkg/config"
 	"github.com/panamafrancis/workbench/pkg/git"
-	"github.com/panamafrancis/workbench/pkg/sandbox"
 )
 
 // KickoffPrompt is the first message an agent is launched with when mail is
@@ -327,8 +326,8 @@ func DefaultReviewBrief(inst *Instance, pm string) string {
 const BusyWindow = 2 * time.Minute
 
 // AgentBusy reports whether agent's transcript grew within BusyWindow of now.
-func AgentBusy(root string, a Agent, now time.Time) bool {
-	p := sandbox.SessionTranscript(root, a.SessionID)
+func AgentBusy(c *Config, root string, a Agent, now time.Time) bool {
+	p := agentTranscript(c, root, a)
 	if p == "" {
 		return false
 	}

@@ -17,7 +17,8 @@ var initCmd = &cobra.Command{
 	Short: "Set up supatree: its directories, config, nono profile and MCP server",
 	Long: "init creates supatree's config, state and cache directories, writes a default\n" +
 		"config.yml if there is none, writes the " + supatree.AgentProfileName + " nono profile the default\n" +
-		"models run under, and registers the supatree MCP server with Claude Code.\n" +
+		"models run under (and " + supatree.CodexProfileName + " for codex, when nono's codex package is\n" +
+		"installed), and registers the supatree MCP server with Claude Code.\n" +
 		"It writes only supatree's own files.",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := supatree.EnsureLayout(); err != nil {
@@ -41,10 +42,27 @@ var initCmd = &cobra.Command{
 			return fmt.Errorf("write nono profile: %w", err)
 		}
 		fmt.Printf("nono profile: %s\n", path)
+		writeCodexProfile()
 		registerMCP()
 		fmt.Println("Next: supatree scaffold <dir> --repos=<a,b,c>")
 		return nil
 	},
+}
+
+// writeCodexProfile writes the codex model's profile when nono's codex
+// package, which it extends, is installed. It is only needed for codex agents,
+// so a missing package is a hint, not an error.
+func writeCodexProfile() {
+	if err := supatree.CheckNonoProfile("codex"); err != nil {
+		fmt.Printf("nono profile %s: skipped — for codex agents, run: nono pull nolabs-ai/codex && supatree init\n", supatree.CodexProfileName)
+		return
+	}
+	path, err := supatree.CodexProfile().Write()
+	if err != nil {
+		fmt.Printf("nono profile %s: %v\n", supatree.CodexProfileName, err)
+		return
+	}
+	fmt.Printf("nono profile: %s\n", path)
 }
 
 func registerMCP() {

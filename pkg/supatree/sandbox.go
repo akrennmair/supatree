@@ -13,13 +13,30 @@ import (
 // models run under. Supatree's own, so no profile file has two writers.
 const AgentProfileName = "supatree-agent"
 
-// DefaultModels is the built-in model map with the claude entry pointed at
-// supatree's own profile.
+// CodexProfileName is the nono profile `supatree init` writes for the codex
+// model, built on nono's codex package (nono pull nolabs-ai/codex).
+const CodexProfileName = "supatree-codex"
+
+// codexModelKey is the built-in codex entry.
+const codexModelKey = "codex"
+
+// DefaultModels is the built-in model map with the claude and codex entries
+// pointed at supatree's own profiles.
+//
+// Codex runs with its own sandbox off, since nono is the sandbox and Codex's
+// Seatbelt cannot nest inside it, and with --no-daemon: otherwise it hands its
+// session to the shared app-server daemon, which runs commands and MCP
+// servers outside nono and without the agent's SUPATREE_* environment.
 func DefaultModels() map[string]config.Model {
 	models := config.DefaultModels()
 	if m, ok := models[defaultModelKey]; ok {
 		m.NonoProfile = AgentProfileName
 		models[defaultModelKey] = m
+	}
+	if m, ok := models[codexModelKey]; ok {
+		m.NonoProfile = CodexProfileName
+		m.Args = []string{"--dangerously-bypass-approvals-and-sandbox", "--no-daemon"}
+		models[codexModelKey] = m
 	}
 	return models
 }
@@ -38,6 +55,21 @@ func AgentProfile() setup.Profile {
 		Name:        AgentProfileName,
 		Description: "claude-code for supatree agents: toolchain and SSH agent; tree access is granted per launch",
 		Extends:     []string{"claude-code"},
+		Read:        []string{ConfigDir()},
+		Allow:       []string{AgentCacheDir()},
+	}.WithToolchain()
+}
+
+// CodexProfile is AgentProfile for the codex model. It extends nono's codex
+// package, which grants Codex its state (~/.codex) and the keychain its login
+// lives in, and adds what every supatree agent gets. Like every generated
+// profile it denies the app-server daemon's sockets (setup.HostDaemonSockets),
+// which matters most here: ~/.codex, which Codex must write, holds one.
+func CodexProfile() setup.Profile {
+	return setup.Profile{
+		Name:        CodexProfileName,
+		Description: "codex for supatree agents: toolchain and SSH agent; tree access is granted per launch",
+		Extends:     []string{"codex"},
 		Read:        []string{ConfigDir()},
 		Allow:       []string{AgentCacheDir()},
 	}.WithToolchain()

@@ -19,6 +19,9 @@ import (
 	"github.com/panamafrancis/workbench/pkg/zellij"
 )
 
+// keyEnter is the confirm key every mode and picker shares.
+const keyEnter = "enter"
+
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -246,7 +249,7 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.setCollapse(r.tree, false)
 			}
 		}
-	case "enter", "o":
+	case keyEnter, "o":
 		// On the repositories header "open" means open the section, since it is
 		// neither a place to stand in nor a process to focus.
 		if r := m.selected(); r != nil && r.kind == rowRepos {
@@ -375,9 +378,12 @@ func (m *Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 
-	// The new-tree stack picker is a selectable list, not a text field.
+	// The pickers are selectable lists, not text fields.
 	if m.mode == modeNewTree {
 		return m.updateStackPick(msg)
+	}
+	if m.mode == modeNewAgentModel {
+		return m.updateModelPick(msg)
 	}
 
 	// Text-input modes (new agent / new tree name).
@@ -389,7 +395,7 @@ func (m *Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.reviewPRs = nil
 		m.input.Blur()
 		return m, nil
-	case "enter":
+	case keyEnter:
 		val := m.input.Value()
 		switch m.mode {
 		case modeNewReviewPRs:
@@ -408,7 +414,7 @@ func (m *Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if val == "" {
 				return m, nil
 			}
-			return m, m.openAgent(tree, val)
+			return m, m.chooseAgentModel(tree, val)
 		case modeNewPM:
 			if val == "" {
 				m.mode = modeNormal
@@ -451,7 +457,7 @@ func (m *Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.inputErr = nil
 			m.input.Blur()
 			return m, m.openStackNew(val)
-		case modeNormal, modeNewTree, modeConfirmDelete, modeConfirmQuit, modeHelp, modeConfirmDeletePM, modeConfirmDeleteAgent:
+		case modeNormal, modeNewTree, modeConfirmDelete, modeConfirmQuit, modeHelp, modeConfirmDeletePM, modeConfirmDeleteAgent, modeNewAgentModel:
 			// Not text-input modes; handled earlier in updateInput.
 		}
 		m.mode = modeNormal
@@ -483,7 +489,7 @@ func (m *Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else {
 				m.inputErr = nil
 			}
-		case modeNormal, modeNewAgent, modeNewTree, modeConfirmDelete, modeConfirmQuit, modeHelp, modeConfirmDeletePM, modeConfirmDeleteAgent:
+		case modeNormal, modeNewAgent, modeNewTree, modeConfirmDelete, modeConfirmQuit, modeHelp, modeConfirmDeletePM, modeConfirmDeleteAgent, modeNewAgentModel:
 		}
 		return m, cmd
 	}
@@ -600,7 +606,7 @@ func (m *Model) updateStackPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.stackCursor < len(m.stCfg.Stacks)-1 {
 			m.stackCursor++
 		}
-	case "enter":
+	case keyEnter:
 		m.actionStack = m.stCfg.Stacks[m.stackCursor].Alias
 		if m.reviewing {
 			m.promptReviewPRs()
@@ -653,13 +659,85 @@ func (m *Model) openSelected() tea.Cmd {
 	return nil
 }
 
+// chooseAgentModel follows naming an agent (a): a new agent picks its model
+// from the configured ones, starting on the tree's. There is nothing to pick,
+// and the agent opens at once, for an agent that already exists (it keeps the
+// model it was registered on) or when only one model is configured.
+func (m *Model) chooseAgentModel(tree, agent string) tea.Cmd {
+	inst := m.instance(tree)
+	if inst == nil {
+		return m.openAgent(tree, agent)
+	}
+	if agent == supatree.MainAgent {
+		return m.openAgent(tree, agent)
+	}
+	if agents, _ := supatree.LoadAgents(inst.Root); supatree.FindAgent(agents, agent) != nil {
+		return m.openAgent(tree, agent)
+	}
+	keys := m.stCfg.ModelKeys()
+	if len(keys) < 2 {
+		return m.openAgent(tree, agent)
+	}
+	m.models = make([]modelChoice, 0, len(keys))
+	m.modelCursor = -1
+	for _, k := range keys {
+		c := modelChoice{key: k, installed: m.stCfg.ModelInstalled(k), isDefault: k == inst.Model}
+		if mc, err := m.stCfg.Model(k); err == nil {
+			c.icon = mc.Icon
+		}
+		if c.installed && (m.modelCursor < 0 || c.isDefault) {
+			m.modelCursor = len(m.models)
+		}
+		m.models = append(m.models, c)
+	}
+	if m.modelCursor < 0 {
+		// Nothing is installed: open on the tree's model, whose launch then
+		// fails with nono's own account of the missing binary.
+		return m.openAgent(tree, agent)
+	}
+	m.actionTree, m.actionAgent = tree, agent
+	m.mode = modeNewAgentModel
+	return nil
+}
+
+// updateModelPick drives the new-agent model picker: j/k (or arrows) move
+// between the installed models, enter opens the agent on the one chosen, esc
+// cancels.
+func (m *Model) updateModelPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	step := func(d int) {
+		for i := m.modelCursor + d; i >= 0 && i < len(m.models); i += d {
+			if m.models[i].installed {
+				m.modelCursor = i
+				return
+			}
+		}
+	}
+	switch msg.String() {
+	case "esc", "q":
+		m.mode = modeNormal
+	case "up", "k":
+		step(-1)
+	case "down", "j":
+		step(1)
+	case keyEnter:
+		m.mode = modeNormal
+		return m, m.openAgentOn(m.actionTree, m.actionAgent, m.models[m.modelCursor].key)
+	}
+	return m, nil
+}
+
 func (m *Model) openAgent(tree, agent string) tea.Cmd {
+	return m.openAgentOn(tree, agent, "")
+}
+
+// openAgentOn opens an agent, a new one on model ("" for the tree's).
+func (m *Model) openAgentOn(tree, agent, model string) tea.Cmd {
 	return func() tea.Msg {
 		inst := m.instance(tree)
 		if inst == nil {
 			return actionDoneMsg{err: fmt.Errorf("supatree %q gone", tree)}
 		}
-		_, err := supatree.OpenRootAgent(inst, m.stCfg, m.ws, m.stCfg.ResolveSidebarWidth(), agent, supatree.OpenOptions{}, nil)
+		_, err := supatree.OpenRootAgent(inst, m.stCfg, m.ws, m.stCfg.ResolveSidebarWidth(), agent, supatree.OpenOptions{Model: model}, nil)
 		// Going to a supatree is what "I have seen this" means, so it clears the
 		// attention marker. Doing it here rather than per render keeps the
 		// per-tab sidebars off the ui.yml lock. Only on success: an open that

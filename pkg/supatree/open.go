@@ -50,10 +50,18 @@ func OpenRootAgent(inst *Instance, c *Config, ws zellij.Workspace, sidebarWidth,
 	if err := ValidateAgentName(agentName); err != nil {
 		return LaunchFailed, err
 	}
+	if err := checkMainModel(agentName, opts.Model, inst.Model); err != nil {
+		return LaunchFailed, err
+	}
 	tab := TabName(inst.Name, agentName)
-	lockErr := config.WithFileLock(openLockPath(tab), func() error {
-		outcome, err = openRootAgentLocked(inst, c, ws, sidebarWidth, agentName, tab, opts, startupW)
-		return nil
+	// Codex chooses its session ID after launch. Serialize opens within one
+	// tree so a second agent cannot launch before the first has recorded its
+	// start time and the pending-session check below can see it.
+	lockErr := config.WithFileLock(openLockPath("\x00"+inst.Name), func() error {
+		return config.WithFileLock(openLockPath(tab), func() error {
+			outcome, err = openRootAgentLocked(inst, c, ws, sidebarWidth, agentName, tab, opts, startupW)
+			return nil
+		})
 	})
 	if lockErr != nil {
 		return LaunchFailed, lockErr
@@ -84,6 +92,9 @@ func openRootAgentLocked(inst *Instance, c *Config, ws zellij.Workspace, sidebar
 	if err != nil {
 		return LaunchFailed, err
 	}
+	if err := checkAgentModel(agent, opts.Model); err != nil {
+		return LaunchFailed, err
+	}
 	// A record this call made is kept only if the agent launches: one left
 	// behind by a refused launch (nono rejecting its profile, say) would be
 	// listed as if it were running. A record made earlier — start_agent
@@ -102,11 +113,26 @@ func openRootAgentLocked(inst *Instance, c *Config, ws zellij.Workspace, sidebar
 	// Resume only when this agent's session transcript actually exists; a freshly
 	// created agent (or one whose id was never launched) starts a new session so
 	// it never lands in another agent's chat.
-	resume := sandbox.SessionExists(inst.Root, agent.SessionID)
 	model, err := c.Model(agent.Model)
 	if err != nil {
 		return LaunchFailed, err
 	}
+	// A CLI that picked its own session ID last time is resumed by that ID
+	// once it is known; until then the agent starts fresh again.
+	if agent, err = bindSession(inst.Root, agent, model); err != nil {
+		return LaunchFailed, err
+	}
+	resume := sandbox.SessionExistsFor(model, inst.Root, agent.SessionID)
+	if !resume && sandbox.PicksOwnSessionID(model) {
+		if err := bindEarlierCodexSessions(c, inst.Root, agentName); err != nil {
+			return LaunchFailed, err
+		}
+	}
+	// The session a fresh launch starts is found later by its start time, so
+	// the time is taken now and recorded only once a launch really happened:
+	// recorded on a mere focus, it would move past the running session's
+	// start and that session could never be found.
+	launchedAt := time.Now()
 	if err := NonoPreflight(model.NonoProfile); err != nil {
 		return LaunchFailed, err
 	}
@@ -124,6 +150,13 @@ func openRootAgentLocked(inst *Instance, c *Config, ws zellij.Workspace, sidebar
 		return LaunchFailed, &LaunchError{Err: err}
 	}
 	if action != zellij.TabFocused {
+		if !resume && sandbox.PicksOwnSessionID(model) {
+			if err := updateAgent(inst.Root, agentName, func(r *Agent) { r.LaunchedAt = launchedAt }); err != nil {
+				// The agent is running: its record must stay (LaunchError keeps
+				// it), even though its session can now not be found.
+				return LaunchStarted, &LaunchError{Err: fmt.Errorf("agent started, but its launch time was not recorded, so its session will not resume: %w", err)}
+			}
+		}
 		return LaunchStarted, nil
 	}
 	// Focused: the agent was running after all (its liveness was unknown
