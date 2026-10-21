@@ -130,11 +130,13 @@ func finishCreate(c *Config, stack *Stack, root, name string, opts CreateOptions
 // meta-worktree and its branch, then any leftover directory).
 func rollback(c *Config, stackPath, root, name string) {
 	if inst, err := LoadInstance(root); err == nil {
+		// Members whose worktree is missing too: a `git worktree add -b` that
+		// fails mid-checkout removes the worktree but keeps the branch it just
+		// made, and a retry under the same name then failed on that branch
+		// (#33). removeMember deletes only the branch this tree owns, and git
+		// refuses to delete one checked out anywhere.
 		for i := len(inst.Members) - 1; i >= 0; i-- {
 			m := inst.Members[i]
-			if !m.Exists {
-				continue
-			}
 			removeMember(c, root, m.Alias, m.URL, m.Branch, &SyncReport{})
 		}
 	}

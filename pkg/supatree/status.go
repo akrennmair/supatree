@@ -202,7 +202,13 @@ func Status(insts []*Instance, cache *github.Cache, opts StatusOptions) Summary 
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			ms := &sum.Trees[jb.tree].Members[jb.member]
-			ms.MemberLocal = localState(insts[jb.tree].Members[jb.member])
+			inst := insts[jb.tree]
+			mem := inst.Members[jb.member]
+			if inst.Reviewing() && mem.Review == nil {
+				ms.MemberLocal = bystanderState(mem)
+				return
+			}
+			ms.MemberLocal = localState(mem)
 		}(jb)
 	}
 	wg.Wait()
@@ -292,6 +298,22 @@ func localState(mem Member) MemberLocal {
 	}
 	l.Ahead, _ = git.CommitsAhead(mem.Path)
 	l.Unpushed, l.HasRemote = git.UnpushedCommits(mem.Path, mem.Branch)
+	return l
+}
+
+// bystanderState is localState for a review tree's member with no pull request
+// under review. memberState makes it idle whatever its git says, unless it is
+// on another branch, so the branch is all it reads: one rev-parse, which runs
+// no configured program, where localState runs about six git processes. Most
+// members of a review tree are bystanders, and the status round runs every
+// member of every tree each time — with ten review trees of a 21-repo stack,
+// that was some 2,000 git processes a round.
+func bystanderState(mem Member) MemberLocal {
+	if !mem.Exists {
+		return MemberLocal{}
+	}
+	l := MemberLocal{Exists: true}
+	l.CheckedOut, _ = git.CurrentBranch(mem.Path)
 	return l
 }
 
