@@ -1,10 +1,13 @@
 package supacmd
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -433,22 +436,62 @@ func launchOne(ctx context.Context, exe string, r supatree.LaunchRequest) supatr
 		logWatch("launch %s:%s: %s", r.Tree, r.Agent, res.Detail)
 		return res
 	}
-	lctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	cmd := exec.CommandContext(lctx, exe, "open", r.Tree, "--agent", r.Agent, "--session", session, "--background")
-	out, err := cmd.CombinedOutput()
-	cancel()
-	if err != nil {
-		res.Detail = fmt.Sprintf("%v: %s", err, strings.TrimSpace(string(out)))
+	outcome, detail := runBackgroundOpen(ctx, exe, "open", r.Tree, "--agent", r.Agent, "--session", session, "--background")
+	if detail != "" {
+		res.Detail = detail
 		logWatch("launch %s:%s: %s", r.Tree, r.Agent, res.Detail)
 		return res
-	}
-	outcome, ok := supatree.ParseOpenOutcome(string(out))
-	if !ok {
-		outcome = supatree.LaunchStarted
 	}
 	res.Outcome = outcome
 	logWatch("launch %s:%s in %s: %s", r.Tree, r.Agent, session, outcome)
 	return res
+}
+
+// runBackgroundOpen runs a `supatree open --background` child and returns
+// what it came to, or why it failed.
+//
+// The child prints its outcome as soon as the open is done, then spends a
+// moment more keeping the focus where the human left it. A launch that went
+// through is answered at that line, and the child is left to finish on its
+// own — waiting it out held every launch behind the queue for the whole
+// watch. A failure is read to the end, for its error.
+func runBackgroundOpen(ctx context.Context, exe string, args ...string) (supatree.LaunchOutcome, string) {
+	lctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	cmd := exec.CommandContext(lctx, exe, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
+	if err == nil {
+		err = cmd.Start()
+	}
+	if err != nil {
+		cancel()
+		return supatree.LaunchFailed, err.Error()
+	}
+	var out strings.Builder
+	sc := bufio.NewScanner(stdout)
+	for sc.Scan() {
+		line := sc.Text()
+		out.WriteString(line + "\n")
+		if outcome, ok := supatree.ParseOpenOutcome(line); ok && outcome != supatree.LaunchFailed {
+			go func() {
+				_, _ = io.Copy(io.Discard, stdout)
+				_ = cmd.Wait()
+				cancel()
+			}()
+			return outcome, ""
+		}
+	}
+	err = cmd.Wait()
+	cancel()
+	if err != nil {
+		return supatree.LaunchFailed, fmt.Sprintf("%v: %s", err, strings.TrimSpace(out.String()+stderr.String()))
+	}
+	outcome, ok := supatree.ParseOpenOutcome(out.String())
+	if !ok {
+		outcome = supatree.LaunchStarted
+	}
+	return outcome, ""
 }
 
 // runSchedule fires any due jobs by queueing them for the PM.

@@ -206,9 +206,9 @@ func TestColdStartMarkerIsTakenOnce(t *testing.T) {
 // refuses instead of starting it twice (#1).
 func TestRunningPM(t *testing.T) {
 	testutil.IsolateHome(t)
-	orig := procIsAgentExec
-	procIsAgentExec = func(int) bool { return true }
-	t.Cleanup(func() { procIsAgentExec = orig })
+	orig := agentExecs
+	agentExecs = allAgentExecs
+	t.Cleanup(func() { agentExecs = orig })
 
 	registerProc(ProcRecord{PID: os.Getpid(), PM: pmReviews, Session: "st-main"})
 	if r, ok := runningPM(PM{Name: pmReviews}); !ok || r.PID != os.Getpid() {
@@ -397,4 +397,14 @@ func TestRoutingPMsFallsBackToTheRoster(t *testing.T) {
 	if p, err := ResolvePM("roshi"); err != nil || p.OffsetPath() != filepath.Join(PMDir(), "requests.roshi.offset") {
 		t.Errorf("ResolvePM(roshi) = %+v, %v", p, err)
 	}
+}
+
+// allAgentExecs stands in for agentExecs where a test's pids are not real
+// agent-execs: every pid asked about counts as one.
+func allAgentExecs(pids []int) map[int]bool {
+	out := make(map[int]bool, len(pids))
+	for _, pid := range pids {
+		out[pid] = true
+	}
+	return out
 }

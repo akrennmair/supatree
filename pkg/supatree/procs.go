@@ -126,7 +126,9 @@ func ListProcs() []ProcRecord {
 	if err != nil {
 		return nil
 	}
-	var out []ProcRecord
+	var recs []ProcRecord
+	var paths []string
+	var pids []int
 	for _, e := range entries {
 		if !strings.HasSuffix(e.Name(), ".json") {
 			continue
@@ -137,8 +139,23 @@ func ListProcs() []ProcRecord {
 			_ = os.Remove(path)
 			continue
 		}
-		if !procAlive(r.PID) {
+		if !pidExists(r.PID) {
 			_ = os.Remove(path)
+			continue
+		}
+		recs = append(recs, r)
+		paths = append(paths, path)
+		pids = append(pids, r.PID)
+	}
+	// One `ps` for every record, not one each: a registry of a few dozen
+	// agents made every PM focus fork a few dozen processes.
+	// A ps that could not run (nil) proves nothing about any of them: the
+	// records are kept, unverified, rather than every live agent's deleted.
+	execs := agentExecs(pids)
+	var out []ProcRecord
+	for i, r := range recs {
+		if execs != nil && !execs[r.PID] {
+			_ = os.Remove(paths[i])
 			continue
 		}
 		out = append(out, r)
@@ -151,16 +168,42 @@ func ListProcs() []ProcRecord {
 // alone is not enough: once the record's process is gone the number is
 // recycled, and signalling it would hit something else entirely.
 func procAlive(pid int) bool {
-	if err := syscall.Kill(pid, 0); err != nil && !errors.Is(err, syscall.EPERM) {
-		return false
-	}
-	return procIsAgentExec(pid)
+	return pidExists(pid) && agentExecs([]int{pid})[pid]
 }
 
-// procIsAgentExec is swappable in tests, which cannot start an agent-exec.
-var procIsAgentExec = func(pid int) bool {
-	out, err := exec.CommandContext(context.Background(), "ps", "-p", strconv.Itoa(pid), "-o", "command=").Output()
-	return err == nil && strings.Contains(string(out), "agent-exec")
+func pidExists(pid int) bool {
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+// agentExecs reports which of pids are agent-execs, from a single `ps`, or
+// nil when ps could not be run at all. Swappable in tests, which cannot start
+// an agent-exec.
+var agentExecs = func(pids []int) map[int]bool {
+	out := map[int]bool{}
+	if len(pids) == 0 {
+		return out
+	}
+	list := make([]string, len(pids))
+	for i, pid := range pids {
+		list[i] = strconv.Itoa(pid)
+	}
+	// ps exits 1 when some pid has gone in the meantime, and still lists the
+	// rest, so its output is read whatever its status.
+	raw, err := exec.CommandContext(context.Background(), "ps", "-p", strings.Join(list, ","), "-o", "pid=,command=").Output()
+	if err != nil && !errors.As(err, new(*exec.ExitError)) {
+		return nil
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		pidField, command, ok := strings.Cut(strings.TrimSpace(line), " ")
+		if !ok {
+			continue
+		}
+		if pid, err := strconv.Atoi(pidField); err == nil && strings.Contains(command, "agent-exec") {
+			out[pid] = true
+		}
+	}
+	return out
 }
 
 // StopGrace is how long a stopped agent gets to exit before it is killed.
