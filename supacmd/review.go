@@ -58,7 +58,7 @@ var reviewCmd = &cobra.Command{
 }
 
 func init() {
-	reviewCmd.Flags().StringVar(&reviewStack, "stack", "", "stack alias (required if more than one is registered)")
+	reviewCmd.Flags().StringVar(&reviewStack, "stack", "", "stack alias (default: the one stack holding every PR's repo)")
 	reviewCmd.Flags().StringVar(&reviewName, "name", "", "tree name (auto-generated city name if omitted)")
 	reviewCmd.Flags().StringVar(&reviewModel, "model", "", "default model for agents (default: stack/registry default)")
 	reviewCmd.Flags().StringVar(&reviewIntent, "intent", "", "what this review is for")

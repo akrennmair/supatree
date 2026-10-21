@@ -146,6 +146,13 @@ func NewReview(c *Config, opts ReviewOptions) (*Instance, *SyncReport, error) {
 	if len(opts.PRs) == 0 {
 		return nil, nil, errors.New("no pull requests given")
 	}
+	if opts.Stack == "" && len(c.Stacks) > 1 {
+		alias, err := inferReviewStack(c, opts.PRs)
+		if err != nil {
+			return nil, nil, err
+		}
+		opts.Stack = alias
+	}
 	inst, report, err := New(c, CreateOptions{
 		Stack:     opts.Stack,
 		Name:      opts.Name,
@@ -167,6 +174,45 @@ func NewReview(c *Config, opts ReviewOptions) (*Instance, *SyncReport, error) {
 	}
 	seedPRCache(byAlias)
 	return inst, report, nil
+}
+
+// inferReviewStack picks the stack for a review whose caller named none: the
+// one registered stack that has a member for every pull request's repository.
+// With several stacks registered, asking for the alias failed the PM's review
+// requests until it guessed one, when the pull requests already say which.
+//
+// The specs read are the local checkouts', which agents can write; that only
+// chooses among stacks the human registered, and the tree is still checked
+// against the spec it is built from (finishCreate).
+func inferReviewStack(c *Config, prs []ReviewRef) (string, error) {
+	var fits, unread []string
+	for _, st := range c.Stacks {
+		spec, err := LoadSpec(st.Path)
+		if err != nil {
+			unread = append(unread, fmt.Sprintf("%s: %v", st.Alias, err))
+			continue
+		}
+		if _, err := mapPRsToMembers(spec, prs); err == nil {
+			fits = append(fits, st.Alias)
+		}
+	}
+	repos := make([]string, len(prs))
+	for i, pr := range prs {
+		repos[i] = pr.Repo
+	}
+	switch len(fits) {
+	case 1:
+		return fits[0], nil
+	case 0:
+		var skipped string
+		if len(unread) > 0 {
+			skipped = "; unreadable: " + strings.Join(unread, "; ")
+		}
+		return "", fmt.Errorf("no registered stack has a member for every one of %s (stacks: %s%s) — add the repos to a stack, or name one",
+			strings.Join(repos, ", "), strings.Join(c.StackAliases(), ", "), skipped)
+	}
+	return "", fmt.Errorf("stacks %s each have %s: name one — --stack on the command line, `stack` to new_tree",
+		strings.Join(fits, ", "), strings.Join(repos, ", "))
 }
 
 // mapPRsToMembers keys the review set by member alias, matching each pull

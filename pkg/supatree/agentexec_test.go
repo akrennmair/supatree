@@ -264,10 +264,10 @@ func TestAgentExecRecordsAndEscalates(t *testing.T) {
 	t.Setenv("SUPATREE_NAME", treeLima)
 	t.Setenv("SUPATREE_AGENT", "main")
 	t.Setenv("ZELLIJ_SESSION_NAME", sessionMain)
-	origAlive, origEsc := procIsAgentExec, escalateAfter
-	procIsAgentExec = func(int) bool { return true }
+	origAlive, origEsc := agentExecs, escalateAfter
+	agentExecs = allAgentExecs
 	escalateAfter = 50 * time.Millisecond
-	t.Cleanup(func() { procIsAgentExec, escalateAfter = origAlive, origEsc })
+	t.Cleanup(func() { agentExecs, escalateAfter = origAlive, origEsc })
 
 	done := make(chan int, 1)
 	go func() {
