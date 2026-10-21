@@ -107,3 +107,30 @@ func TestRunBackgroundOpenReportsFailure(t *testing.T) {
 		t.Fatalf("got %q, %q; want failed with the child's error", outcome, detail)
 	}
 }
+
+// The watcher leaves the directory it was started in, which may be a tree
+// about to be removed, for the state root.
+func TestLeaveCallerDir(t *testing.T) {
+	testutil.IsolateHome(t)
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	if err := os.MkdirAll(supatree.StateRoot(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	doomed := t.TempDir()
+	if err := os.Chdir(doomed); err != nil {
+		t.Fatal(err)
+	}
+	leaveCallerDir()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := filepath.EvalSymlinks(supatree.StateRoot())
+	if got, _ := filepath.EvalSymlinks(cwd); got != want {
+		t.Errorf("cwd = %s, want the state root %s", got, want)
+	}
+}

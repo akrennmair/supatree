@@ -43,6 +43,7 @@ var watchCmd = &cobra.Command{
 		"hand is for debugging or for a cron entry that covers the hours when no\n" +
 		"session is open.",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		leaveCallerDir()
 		err := config.TryFileLock(supatree.WatchLockPath(), func() error {
 			// Only the winner owns the log: a loser rotating it would move the
 			// file out from under the watcher that is actually running.
@@ -256,6 +257,19 @@ func restartWatcher(path string) {
 	err := syscall.Exec(path, os.Args, os.Environ())
 	opsMu.Unlock()
 	logWatch("restart failed, carrying on: %v", err)
+}
+
+// leaveCallerDir moves the watcher out of the directory it was started in.
+// It inherits `supatree start`'s, which is often a tree's — and once that tree
+// is removed, every git the watcher runs fails with "Unable to read current
+// working directory", which failed a burst of review requests in a row. The
+// state root is supatree's own and outlives every tree.
+func leaveCallerDir() {
+	if err := os.Chdir(supatree.StateRoot()); err != nil {
+		if home, herr := os.UserHomeDir(); herr == nil {
+			_ = os.Chdir(home)
+		}
+	}
 }
 
 // launchPollInterval is how often the watcher checks the launch queue.
