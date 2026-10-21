@@ -3,6 +3,7 @@ package supatree
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/panamafrancis/workbench/pkg/git"
@@ -151,7 +152,7 @@ func resolveStack(c *Config, alias string) (*Stack, error) {
 		if len(c.Stacks) == 1 {
 			return &c.Stacks[0], nil
 		}
-		return nil, fmt.Errorf("multiple stacks registered; pass --stack=<alias>")
+		return nil, fmt.Errorf("multiple stacks registered (%s): name one — --stack on the command line, `stack` to new_tree", strings.Join(c.StackAliases(), ", "))
 	}
 	s := c.FindStack(alias)
 	if s == nil {

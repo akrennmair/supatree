@@ -525,3 +525,43 @@ func TestAddReviewRefusesAnotherTreesWorktree(t *testing.T) {
 		t.Error("the other tree's worktree was removed")
 	}
 }
+
+// With several stacks registered and none named, a review goes to the one
+// stack holding every pull request's repo, and says so when none or several do.
+func TestInferReviewStack(t *testing.T) {
+	c, a, b := reviewStackFixture(t)
+	addStack := func(alias string, members map[string]string) {
+		dir := t.TempDir()
+		if err := SaveSpec(dir, &Spec{Members: members}); err != nil {
+			t.Fatal(err)
+		}
+		c.Stacks = append(c.Stacks, Stack{Alias: alias, Path: dir})
+	}
+	addStack("t", map[string]string{"b": b})
+	prA := ReviewRef{Repo: repoOA, Number: 1}
+	prB := ReviewRef{Repo: repoOB, Number: 1}
+
+	if got, err := inferReviewStack(c, []ReviewRef{prA}); err != nil || got != "s" {
+		t.Errorf("o/a: got %q, %v; want s", got, err)
+	}
+	if got, err := inferReviewStack(c, []ReviewRef{prB}); err != nil || got != "t" {
+		t.Errorf("o/b: got %q, %v; want t", got, err)
+	}
+	if _, err := inferReviewStack(c, []ReviewRef{prA, prB}); err == nil || !strings.Contains(err.Error(), "no registered stack") {
+		t.Errorf("o/a with o/b, in no one stack: err = %v", err)
+	}
+	addStack("u", map[string]string{"a": a})
+	if _, err := inferReviewStack(c, []ReviewRef{prA}); err == nil || !strings.Contains(err.Error(), "s, u") {
+		t.Errorf("o/a in two stacks: err = %v, want both named", err)
+	}
+
+	// NewReview uses it when no stack is named.
+	c.Stacks = c.Stacks[:2]
+	inst, _, err := NewReview(c, ReviewOptions{Name: "rev", PRs: []ReviewRef{{Repo: repoOA, Number: 1, URL: "https://github.com/o/a/pull/1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inst.Stack != "s" {
+		t.Errorf("review tree built from stack %q, want s", inst.Stack)
+	}
+}
