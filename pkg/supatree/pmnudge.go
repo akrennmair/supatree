@@ -16,8 +16,7 @@ const PMNudgeText = "You have new requests. Call the `requests` tool and act on 
 var (
 	listProcs    = ListProcs
 	sessionAlive = zellij.SessionAlive
-	focusedTab   = zellij.FocusedTab
-	agentPane    = zellij.AgentPane
+	agentPane    = AgentPane
 	submitToPane = zellij.SubmitToPane
 )
 
@@ -47,10 +46,12 @@ func nudgeDue(st readOffset, end, size int64) bool {
 // lets the state go unlocked.
 //
 // A PM is skipped, and retried next call because its state is not advanced,
-// when it has no live process, its session is gone, its tab is the focused
-// one (the human is looking at it, badge included), or no pane in its tab is
+// when it has no live process, its session is gone, or no pane in its tab is
 // certainly the agent: text typed into the wrong terminal is worse than a
-// nudge that never comes. A nudge is attempted at most once — the state
+// nudge that never comes. Focus is deliberately not checked: zellij reports a
+// tab focused whenever it is the client's current one, which a PM tab left
+// open in a backgrounded terminal always is, so the check suppressed every
+// nudge for the commonest setup there is. The opt-in is the guard instead. A nudge is attempted at most once — the state
 // advances even when submitting fails, since a half-delivered one retyped
 // would leave the text twice in the prompt.
 func NudgePMs() ([]string, error) {
@@ -99,11 +100,7 @@ func NudgePMs() ([]string, error) {
 		if alive, err := sessionAlive(session); err != nil || !alive {
 			continue
 		}
-		tab := d.pm.Tab()
-		if focusedTab(session) == tab {
-			continue
-		}
-		pane, ok, err := agentPane(session, tab)
+		pane, ok, err := agentPane(session, d.pm.Tab())
 		if err != nil {
 			errs = append(errs, fmt.Errorf("nudge %s: %w", d.pm.Name, err))
 			continue

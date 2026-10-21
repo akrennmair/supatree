@@ -31,13 +31,11 @@ func TestNudgeDue(t *testing.T) {
 }
 
 // nudgeStub replaces the process registry and the zellij calls. By default
-// every PM in pms runs in session "s" with an agent pane in its tab, and no tab
-// is focused.
+// every PM in pms runs in session "s" with an agent pane in its tab.
 type nudgeStub struct {
 	procs     []ProcRecord
 	listed    int
 	dead      bool
-	focused   string
 	noPane    map[string]bool // tab → no agent pane there
 	submitErr error
 	submitted []string // tabs typed into
@@ -50,10 +48,9 @@ func stubNudge(t *testing.T, pms ...string) *nudgeStub {
 		s.procs = append(s.procs, ProcRecord{PID: 1, PM: name, Session: "s"})
 	}
 	paneTab := map[int]string{}
-	oldList, oldAlive, oldFocus, oldPane, oldSubmit := listProcs, sessionAlive, focusedTab, agentPane, submitToPane
+	oldList, oldAlive, oldPane, oldSubmit := listProcs, sessionAlive, agentPane, submitToPane
 	listProcs = func() []ProcRecord { s.listed++; return s.procs }
 	sessionAlive = func(string) (bool, error) { return !s.dead, nil }
-	focusedTab = func(string) string { return s.focused }
 	agentPane = func(_, tab string) (zellij.Pane, bool, error) {
 		if s.noPane[tab] {
 			return zellij.Pane{}, false, nil
@@ -70,7 +67,7 @@ func stubNudge(t *testing.T, pms ...string) *nudgeStub {
 		return s.submitErr
 	}
 	t.Cleanup(func() {
-		listProcs, sessionAlive, focusedTab, agentPane, submitToPane = oldList, oldAlive, oldFocus, oldPane, oldSubmit
+		listProcs, sessionAlive, agentPane, submitToPane = oldList, oldAlive, oldPane, oldSubmit
 	})
 	return s
 }
@@ -167,9 +164,6 @@ func TestNudgePMsSkipsAndRetries(t *testing.T) {
 		{"session gone",
 			func(s *nudgeStub) { s.dead = true },
 			func(s *nudgeStub) { s.dead = false }},
-		{"tab focused",
-			func(s *nudgeStub) { s.focused = PMTab },
-			func(s *nudgeStub) { s.focused = "elsewhere" }},
 		{"no agent pane",
 			func(s *nudgeStub) { s.noPane[PMTab] = true },
 			func(s *nudgeStub) { delete(s.noPane, PMTab) }},
