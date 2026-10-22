@@ -138,6 +138,15 @@ func (c *Config) FindStack(alias string) *Stack {
 	return nil
 }
 
+// StackAliases lists the registered stacks' aliases, in registration order.
+func (c *Config) StackAliases() []string {
+	out := make([]string, len(c.Stacks))
+	for i, s := range c.Stacks {
+		out[i] = s.Alias
+	}
+	return out
+}
+
 // ResolveTreesBase returns the configured trees base or the default.
 func (c *Config) ResolveTreesBase() string {
 	if c.TreesBase != "" {

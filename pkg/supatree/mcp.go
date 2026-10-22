@@ -231,7 +231,7 @@ func MCPServer(version string) *mcp.Server {
 				Name:        "new_tree",
 				Description: "PM: create a supatree from a stack — or, with `prs`, a review tree for someone else's pull requests. Needs autonomy 'auto' to do unasked, or `asked` when the human has asked you to. With `start`, its main agent is also launched in the background and set to work on `brief` (a review tree gets a full review brief by default); without it, the tree just waits for the human.",
 				InputSchema: mcp.ObjectSchema(map[string]any{
-					argStack:     mcp.StringProp("Stack alias (omit if only one is registered)"),
+					argStack:     mcp.StringProp("Stack alias (omit if only one is registered; for a review, omit it to use the one stack holding every PR's repo)"),
 					"name":       mcp.StringProp("Supatree name (omit to auto-generate)"),
 					"intent":     mcp.StringProp("What this supatree is for — the issue or task. Recorded, and worth filling in: the branch rename discards the generated name."),
 					"prs":        mcp.StringProp("Comma-separated pull request URLs (or owner/repo#number). Given these, the tree is a REVIEW tree instead: each repo is checked out at its PR head and the authoring commands are refused. Use this when the task is reviewing someone else's cross-repo change rather than writing one."),

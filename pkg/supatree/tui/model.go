@@ -4,7 +4,9 @@
 package tui
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -18,6 +20,9 @@ import (
 
 const (
 	tickInterval = 30 * time.Second
+	// stampInterval is how often the sidebar looks for trees, members or
+	// agents that came or went since it last read them (stateStamp).
+	stampInterval = 2 * time.Second
 	// wheelStep is how many rows one mouse-wheel notch scrolls.
 	wheelStep = 3
 	// fallbackPage is the half-page distance used by ctrl+d/ctrl+u before the
@@ -140,6 +145,7 @@ type Model struct {
 	detail      string          // full error text the `?` panel shows instead of the reference (opened by `e`)
 	panel       []string        // the `?` panel folded to the pane, for panelKey
 	panelKey    panelKey
+	stamp       string // stateStamp at the last reload it caused
 	fetching    bool   // a PR fetch is in flight
 	ghAvailable bool   // gh usable; false after a permanent error suppresses tick fetches
 	prHint      string // persistent PR-fetch hint (e.g. "gh rate limited")
@@ -167,6 +173,11 @@ func New(stCfg *supatree.Config, ws zellij.Workspace) *Model {
 		input:       textinput.New(),
 	}
 	m.reload()
+	// The baseline: what New has just read. Taken here rather than from the
+	// first stampMsg, which would miss a change in the first interval — and,
+	// with nothing on disk yet, an empty stamp would make the first tree
+	// created elsewhere look like the baseline.
+	m.stamp = stateStamp(m.insts)
 	return m
 }
 
@@ -479,7 +490,7 @@ func (m *Model) Init() tea.Cmd {
 	// Non-forced fetch: honor the on-disk cache. The sidebar runs in a restart
 	// loop, so forcing here would re-hit the gh API for every member on every
 	// restart and exhaust the rate limit.
-	return tea.Batch(m.tickCmd(), m.refreshDirtyCmd(), m.refreshRunningCmd(),
+	return tea.Batch(m.tickCmd(), m.stampCmd(), m.refreshDirtyCmd(false), m.refreshRunningCmd(),
 		m.refreshAttentionCmd(), m.refreshPMPendingCmd(), m.fetchPRCmd(false), m.coldStartCmd())
 }
 
@@ -527,7 +538,52 @@ func (m *Model) tickCmd() tea.Cmd {
 	return tea.Tick(tickInterval, func(t time.Time) tea.Msg { return tickMsg{} })
 }
 
+// stampCmd takes the next stateStamp after stampInterval, off the main loop.
+func (m *Model) stampCmd() tea.Cmd {
+	insts := m.insts
+	return tea.Tick(stampInterval, func(time.Time) tea.Msg { return stampMsg{stamp: stateStamp(insts)} })
+}
+
+// stateStamp fingerprints what the rows are built from, with stats alone: the
+// trees' state dirs, their meta.yml and agents.yml, whether each member's
+// worktree exists yet, and the PM registry.
+//
+// The 30s tick was the only thing that noticed a tree created somewhere else
+// — by the PM through the watcher, or from another tab's sidebar. A reload
+// caught mid-creation showed the tree before its worktrees existed, and it
+// stayed that way, its members missing, until the next tick or a manual `r`.
+// A stamp every couple of seconds costs a few dozen stats and reloads only
+// when something changed.
+func stateStamp(insts []*supatree.Instance) string {
+	var b strings.Builder
+	base := supatree.TreesStateDir()
+	entries, _ := os.ReadDir(base)
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		b.WriteString(e.Name())
+		for _, f := range []string{"meta.yml", "agents.yml"} {
+			if fi, err := os.Stat(filepath.Join(base, e.Name(), f)); err == nil {
+				fmt.Fprintf(&b, ":%d", fi.ModTime().UnixNano())
+			}
+		}
+		b.WriteByte('\n')
+	}
+	for _, inst := range insts {
+		for _, mem := range inst.Members {
+			_, err := os.Stat(mem.Path)
+			fmt.Fprintf(&b, "%s/%s:%t\n", inst.Name, mem.Alias, err == nil)
+		}
+	}
+	if fi, err := os.Stat(supatree.PMsPath()); err == nil {
+		fmt.Fprintf(&b, "pms:%d\n", fi.ModTime().UnixNano())
+	}
+	return b.String()
+}
+
 type tickMsg struct{}
+type stampMsg struct{ stamp string }
 type dirtyMsg struct{ dirty map[string]bool }
 type attentionMsg struct{ attention map[string]bool }
 type pmPendingMsg struct{ n map[string]int }

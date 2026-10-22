@@ -301,6 +301,16 @@ func currentPMAgentID() string {
 // no tab of its own left — refused, rather than started a second time on the
 // same session (#1).
 func OpenPM(cfg *Config, ws zellij.Workspace, sidebarWidth, name string) (opened bool, err error) {
+	// A PM already running in a tab here is only focused, and focusing starts
+	// nothing: no lock, no scaffold, no scan of the process registry (a `ps`
+	// per agent), which is what made getting back to a PM hang while many
+	// agents were running.
+	if pms, err := LoadPMs(); err == nil {
+		if p := pmFor(pms, name); p != nil && focusLive(p.Tab()) {
+			logLaunch("PM "+p.Name, p.Tab(), "focused")
+			return false, nil
+		}
+	}
 	// nono refuses a grant on a path that does not exist.
 	if err := EnsureLayout(); err != nil {
 		return false, err
@@ -324,14 +334,22 @@ func resolveOpenPM(name string) (PM, error) {
 	if err != nil {
 		return PM{}, err
 	}
-	if name == "" {
-		return pms[0], nil
-	}
-	p := FindPM(pms, name)
+	p := pmFor(pms, name)
 	if p == nil {
 		return PM{}, fmt.Errorf("no PM named %q", name)
 	}
 	return *p, nil
+}
+
+// pmFor is the PM named name in pms, "" being the top one; nil if none.
+func pmFor(pms []PM, name string) *PM {
+	if name == "" {
+		if len(pms) == 0 {
+			return nil
+		}
+		return &pms[0]
+	}
+	return FindPM(pms, name)
 }
 
 // runningPM is the registry's record of pm's process, if it is running.

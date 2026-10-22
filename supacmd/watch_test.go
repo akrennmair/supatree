@@ -1,12 +1,14 @@
 package supacmd
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/panamafrancis/supatree/pkg/supatree"
 	"github.com/panamafrancis/workbench/pkg/testutil"
 )
 
@@ -72,5 +74,63 @@ func TestBinaryWatchWaitsForAStableReplacement(t *testing.T) {
 	}
 	if !w.replaced() {
 		t.Fatal("a replacement stable across two checks should restart the watcher")
+	}
+}
+
+// A background open is answered at its outcome line, not when the child
+// exits: the child goes on to watch the focus, and the queue must not wait.
+func TestRunBackgroundOpenReturnsAtOutcome(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "open")
+	body := "#!/bin/sh\necho 'supatree-open-outcome: " + string(supatree.LaunchStarted) + "'\nsleep 5\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	outcome, detail := runBackgroundOpen(context.Background(), script)
+	if outcome != supatree.LaunchStarted || detail != "" {
+		t.Fatalf("got %q, %q; want started", outcome, detail)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("waited %v for a child that had already answered", d)
+	}
+}
+
+// A child that fails is read to its exit, and its error is the detail.
+func TestRunBackgroundOpenReportsFailure(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "open")
+	body := "#!/bin/sh\necho 'supatree-open-outcome: " + string(supatree.LaunchFailed) + "'\necho 'nono refused' >&2\nexit 1\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outcome, detail := runBackgroundOpen(context.Background(), script)
+	if outcome != supatree.LaunchFailed || !strings.Contains(detail, "nono refused") {
+		t.Fatalf("got %q, %q; want failed with the child's error", outcome, detail)
+	}
+}
+
+// The watcher leaves the directory it was started in, which may be a tree
+// about to be removed, for the state root.
+func TestLeaveCallerDir(t *testing.T) {
+	testutil.IsolateHome(t)
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	if err := os.MkdirAll(supatree.StateRoot(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	doomed := t.TempDir()
+	if err := os.Chdir(doomed); err != nil {
+		t.Fatal(err)
+	}
+	leaveCallerDir()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := filepath.EvalSymlinks(supatree.StateRoot())
+	if got, _ := filepath.EvalSymlinks(cwd); got != want {
+		t.Errorf("cwd = %s, want the state root %s", got, want)
 	}
 }

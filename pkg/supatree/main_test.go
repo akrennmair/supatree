@@ -16,6 +16,9 @@ import (
 // agents' profile being installed. gitjail_test.go covers the confinement.
 func TestMain(m *testing.M) {
 	insideSandbox = func() bool { return true }
+	// Run from a zellij pane, the tests would otherwise act on the session
+	// they were started in: switching its tabs, or reading them as their own.
+	_ = os.Unsetenv("ZELLIJ")
 	cleanup := testutil.IsolateProcess()
 	code := m.Run()
 	cleanup()

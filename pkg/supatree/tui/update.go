@@ -40,6 +40,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.reloadWithSelection()
 		}
 		return m, tea.Batch(append(m.backgroundCmds(), m.tickCmd())...)
+	case stampMsg:
+		// An input mode is left alone, as the tick leaves it; the stamp is kept
+		// unchanged so the reload happens once the mode ends.
+		if msg.stamp == m.stamp || m.mode != modeNormal {
+			return m, m.stampCmd()
+		}
+		m.stamp = msg.stamp
+		m.reloadWithSelection()
+		return m, tea.Batch(m.stampCmd(), m.refreshDirtyCmd(false), m.refreshRunningCmd())
 	case dirtyMsg:
 		m.dirty = msg.dirty
 	case attentionMsg:
@@ -90,7 +99,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// it, rather than leaving it pinned to the prior selection off-screen.
 			m.selectRow(row{kind: rowTree, tree: msg.reveal, label: msg.reveal})
 		}
-		return m, tea.Batch(m.refreshDirtyCmd(), m.refreshRunningCmd(), m.refreshAttentionCmd(), m.refreshPMPendingCmd())
+		return m, tea.Batch(m.refreshDirtyCmd(false), m.refreshRunningCmd(), m.refreshAttentionCmd(), m.refreshPMPendingCmd())
 	case tea.MouseMsg:
 		return m.updateMouse(msg)
 	case tea.KeyMsg:
@@ -220,7 +229,7 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.moveCursor(-m.halfPage())
 	case "r":
 		m.reloadWithSelection()
-		return m, tea.Batch(m.refreshDirtyCmd(), m.refreshRunningCmd(), m.refreshPMPendingCmd(), m.fetchPRCmd(true))
+		return m, tea.Batch(m.refreshDirtyCmd(true), m.refreshRunningCmd(), m.refreshPMPendingCmd(), m.fetchPRCmd(true))
 	case " ":
 		// Fold the innermost section the cursor is in: the repositories list on a
 		// repo or section row, the whole supatree anywhere else.
@@ -1131,18 +1140,13 @@ func (m *Model) refreshPMPendingCmd() tea.Cmd {
 	}
 }
 
-func (m *Model) refreshDirtyCmd() tea.Cmd {
+// refreshDirtyCmd reads which members have uncommitted changes from the
+// snapshot every sidebar shares (supatree.DirtyMembers), refreshing it when it
+// is stale and this sidebar wins the round; force re-checks now.
+func (m *Model) refreshDirtyCmd(force bool) tea.Cmd {
 	insts := m.insts
 	return func() tea.Msg {
-		dirty := map[string]bool{}
-		for _, inst := range insts {
-			for _, mem := range inst.Members {
-				if mem.Exists && git.IsDirty(mem.Path) {
-					dirty[mem.Path] = true
-				}
-			}
-		}
-		return dirtyMsg{dirty: dirty}
+		return dirtyMsg{dirty: supatree.DirtyMembers(insts, supatree.DirtyMaxAge, force)}
 	}
 }
 
@@ -1160,7 +1164,7 @@ func (m *Model) refreshRunningCmd() tea.Cmd {
 // tick handlers. The PR fetch is skipped while gh is known-unavailable (a
 // permanent error), so a broken auth doesn't spawn a fetch every tick forever.
 func (m *Model) backgroundCmds() []tea.Cmd {
-	cmds := []tea.Cmd{m.refreshDirtyCmd(), m.refreshRunningCmd(), m.refreshAttentionCmd(), m.refreshPMPendingCmd()}
+	cmds := []tea.Cmd{m.refreshDirtyCmd(false), m.refreshRunningCmd(), m.refreshAttentionCmd(), m.refreshPMPendingCmd()}
 	if m.ghAvailable {
 		cmds = append(cmds, m.fetchPRCmd(false))
 	}

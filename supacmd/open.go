@@ -41,22 +41,18 @@ var openCmd = &cobra.Command{
 // openRootAgent opens or resumes a named agent running at the supatree root.
 func openRootAgent(inst *supatree.Instance) error {
 	ensureZellij()
-	// Opening a tab focuses it. A launch nobody at the keyboard asked for — the
-	// watcher acting on the PM's start_agent — must not take the terminal away
-	// from whoever is typing, so put the focus back where it was.
-	prev := ""
+	// A background open (the watcher acting on the PM's start_agent) leaves
+	// the focus where it was: OpenRootAgent puts it back (Wake).
+	opts := supatree.OpenOptions{Model: openModel, Wake: openBackground}
 	if openBackground {
-		prev = zellij.FocusedTab("")
+		// The watcher reads this line to tell the PM what the launch came to,
+		// and stops waiting once it has it: printed before the focus watch, it
+		// does not hold up the launch queue.
+		opts.Opened = func(outcome supatree.LaunchOutcome, _ error) {
+			fmt.Println(supatree.OpenOutcomePrefix + string(outcome))
+		}
 	}
-	outcome, err := supatree.OpenRootAgent(inst, stCfg, supatreeWorkspace(), stCfg.ResolveSidebarWidth(), openAgent,
-		supatree.OpenOptions{Model: openModel, Wake: openBackground}, os.Stderr)
-	if err == nil && prev != "" && prev != supatree.TabName(inst.Name, openAgent) {
-		_ = zellij.GoToTab(prev)
-	}
-	if openBackground {
-		// The watcher reads this line to tell the PM what the launch came to.
-		fmt.Println(supatree.OpenOutcomePrefix + string(outcome))
-	}
+	_, err := supatree.OpenRootAgent(inst, stCfg, supatreeWorkspace(), stCfg.ResolveSidebarWidth(), openAgent, opts, os.Stderr)
 	return err
 }
 
