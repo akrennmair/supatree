@@ -20,9 +20,13 @@ go test ./...
 
 Workbench's `pkg/*` is not a stable public API; supatree is its one outside
 consumer. A change that touches a shared package is two PRs, in order:
-workbench first, then here, bumping with a pseudo-version
-(`go get github.com/panamafrancis/workbench@<merged-sha>`) — tags are cut only
-for workbench's own releases. For local development, a `go.work` that `use`s
+workbench first, then here. Workbench is consumed from the
+`akrennmair/workbench` fork, which keeps the `panamafrancis` module path, so
+go.mod carries `replace github.com/panamafrancis/workbench =>
+github.com/akrennmair/workbench <pseudo-version>`: bump by pointing that target
+at the merged sha (`go mod edit -replace
+github.com/panamafrancis/workbench=github.com/akrennmair/workbench@<merged-sha>`),
+not with `go get` — tags are cut only for workbench's own releases. For local development, a `go.work` that `use`s
 both checkouts builds against your unpushed workbench changes; after a bump,
 `go mod tidy` with `GOWORK=off` must succeed before pushing. Shared-package
 discipline (GitHub quota, the PR cache's single writer, the zellij quirks) is

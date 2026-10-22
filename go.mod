@@ -36,3 +36,5 @@ require (
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 )
+
+replace github.com/panamafrancis/workbench => github.com/akrennmair/workbench v0.0.0-20261021201512-5d6099d53b92
