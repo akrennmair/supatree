@@ -37,4 +37,4 @@ require (
 	golang.org/x/text v0.42.0 // indirect
 )
 
-replace github.com/panamafrancis/workbench => github.com/akrennmair/workbench v0.0.0-20261021201512-5d6099d53b92
+replace github.com/panamafrancis/workbench => github.com/akrennmair/workbench v0.0.0-20261022102910-775ae5ee433f
