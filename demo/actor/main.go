@@ -10,6 +10,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -119,7 +120,10 @@ func load(name string) (*Script, error) {
 			return nil, err
 		}
 		var s Script
-		if err := yaml.Unmarshal(data, &s); err != nil {
+		dec := yaml.NewDecoder(bytes.NewReader(data))
+		// A misspelled step key would otherwise be dropped and the step skipped.
+		dec.KnownFields(true)
+		if err := dec.Decode(&s); err != nil && !errors.Is(err, io.EOF) {
 			return nil, fmt.Errorf("%s.yml: %w", n, err)
 		}
 		return &s, nil
@@ -237,6 +241,8 @@ func (a *actor) step(s Step) error {
 		time.Sleep(d)
 	case s.WaitRequest:
 		a.waitRequest(s.Lines)
+	default:
+		return fmt.Errorf("step %+v has no action", s)
 	}
 	return nil
 }
@@ -302,8 +308,12 @@ func (a *actor) read() string {
 			// Run headless, as a scene's setup does: the part is played.
 			os.Exit(0)
 		}
-		// The terminal went away: stay up rather than close the pane.
-		select {}
+		// The terminal went away (or ^D): stay up rather than close the pane.
+		// Not a bare select{}: with no other goroutine the runtime calls that
+		// a deadlock and crashes, closing the pane after all.
+		for {
+			time.Sleep(time.Hour)
+		}
 	}
 	fmt.Println()
 	return strings.TrimSpace(line)
@@ -407,13 +417,9 @@ func (a *actor) call(tool string, args map[string]any, lines int) (string, error
 		call = string(r[:width()-15]) + "…"
 	}
 	fmt.Printf("%s● supatree - %s%s%s\n", green, reset+bold, call, reset)
-	if a.mcp == nil {
-		c, err := startMCP()
-		if err != nil {
-			result(err.Error(), lines, true)
-			return "", err
-		}
-		a.mcp = c
+	if err := a.ensureMCP(); err != nil {
+		result(err.Error(), lines, true)
+		return "", err
 	}
 	stop := spin("Working")
 	out, err := a.mcp.call(tool, args)
@@ -450,18 +456,22 @@ func (a *actor) run(command string, lines int) {
 // a PM picks up a tree agent's reply.
 func (a *actor) waitRequest(lines int) {
 	stop := spin("Waiting for the team")
-	if a.mcp == nil {
-		c, err := startMCP()
-		if err != nil {
-			stop()
-			result(err.Error(), lines, true)
-			return
-		}
-		a.mcp = c
+	if err := a.ensureMCP(); err != nil {
+		stop()
+		result(err.Error(), lines, true)
+		return
 	}
 	for {
 		out, err := a.mcp.call("requests", map[string]any{})
-		if err == nil && !strings.HasPrefix(strings.TrimSpace(out), "no pending requests") {
+		if err != nil {
+			// A dead `supatree mcp` never answers again: show it rather than
+			// spin forever.
+			stop()
+			fmt.Printf("%s● supatree - %srequests%s()\n", green, reset+bold, reset)
+			result(err.Error(), lines, true)
+			return
+		}
+		if !strings.HasPrefix(strings.TrimSpace(out), "no pending requests") {
 			stop()
 			fmt.Printf("%s● supatree - %srequests%s()\n", green, reset+bold, reset)
 			result(out, lines, false)
@@ -470,6 +480,19 @@ func (a *actor) waitRequest(lines int) {
 		}
 		time.Sleep(2 * time.Second)
 	}
+}
+
+// ensureMCP starts the `supatree mcp` child on first use.
+func (a *actor) ensureMCP() error {
+	if a.mcp != nil {
+		return nil
+	}
+	c, err := startMCP()
+	if err != nil {
+		return err
+	}
+	a.mcp = c
+	return nil
 }
 
 // mcpClient speaks MCP's stdio JSON-RPC to one `supatree mcp` child, which

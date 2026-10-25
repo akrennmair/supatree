@@ -21,6 +21,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -81,7 +82,11 @@ type view struct {
 
 func (p *PR) at(now time.Time) view {
 	v := view{State: "open", UpdatedAt: p.Created}
-	for _, s := range p.Timeline {
+	// Fold in time order: a posted review or a merge is appended after the
+	// scripted steps, which may lie later than it.
+	steps := append([]Step(nil), p.Timeline...)
+	sort.SliceStable(steps, func(i, j int) bool { return steps[i].At < steps[j].At })
+	for _, s := range steps {
 		t := p.Created.Add(time.Duration(s.At * float64(time.Second)))
 		if t.After(now) {
 			continue

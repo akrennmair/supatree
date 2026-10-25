@@ -43,8 +43,10 @@ supatree start demo
 
 1. `actors/<scene>/` — a script per agent that speaks in it: `pm.yml` for the
    top PM, `pm-<name>.yml` for a named PM, `<tree>.<agent>.yml` for a tree
-   agent. Anything without a script idles. A `setup.sh` there runs after the
-   sandbox is built, for state the scene starts from.
+   agent. `actors/common/` holds scripts shared by several scenes; a scene's
+   own script of the same name wins. Anything without a script idles. A
+   `setup.sh` there runs after the sandbox is built, for state the scene
+   starts from.
 2. `tapes/<scene>.tape` — the VHS script. Wait on screen text
    (`Wait+Screen /…/`), never on fixed sleeps, so timing does not change what
    is captured.

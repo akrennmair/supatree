@@ -15,6 +15,8 @@ set -euo pipefail
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 DEMO_DIR=${DEMO_DIR:-/tmp/supatree-demo}
 DEMO_DIR=${DEMO_DIR%/}
+# Absolute: HOME is derived from it, and the build below changes directory.
+case "$DEMO_DIR" in /*) ;; *) DEMO_DIR="$REPO/$DEMO_DIR" ;; esac
 # Short and fixed: a unix socket path is capped near 104 bytes.
 DEMO_SOCKETS=${DEMO_SOCKETS:-/tmp/stdemo.$(id -u)}
 
@@ -45,11 +47,14 @@ BUILD=$(mktemp -d "$DEMO_DIR/build.XXXXXX")
     && GOWORK=off go build -o "$BUILD/gh" ./demo/fakegh \
     && GOWORK=off go build -o "$BUILD/claude" ./demo/actor)
 
-# Wipe the old sandbox, its zellij session included.
+# Wipe the old sandbox, its zellij session and watcher included. The watcher
+# only notices its session is gone on its next round, and until then it would
+# write into the sandbox being rebuilt (or re-exec into the new binary).
 if [ -d "$DEMO_DIR/home" ]; then
     (eval "$(env_lines)"
         zellij kill-all-sessions -y >/dev/null 2>&1 || true
-        zellij delete-all-sessions -y -f >/dev/null 2>&1 || true)
+        zellij delete-all-sessions -y -f >/dev/null 2>&1 || true
+        pkill -f "$DEMO_DIR/home/.local/bin/supatree watch" 2>/dev/null || true)
 fi
 rm -rf "$DEMO_DIR/home"
 mkdir -p "$DEMO_DIR/home/.local/bin" "$DEMO_SOCKETS"
