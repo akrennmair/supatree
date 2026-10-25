@@ -413,8 +413,8 @@ change() {
 tree checkout-retry
 change checkout-retry api internal/orders/store.go "// Checkout is idempotent: paying a paid order is not an error." "orders: idempotent checkout"
 change checkout-retry web src/checkout/Checkout.tsx "// Retries once on a network error." "checkout: retry once on network errors"
-pr api 15 you st/checkout-retry/api "$(sha "$HOME/supatree/trees/checkout-retry/repos/api")" "Idempotent checkout" '[{"at":0,"checks":"success","review":"APPROVED","state":"merged"}]'
-pr web 39 you st/checkout-retry/web "$(sha "$HOME/supatree/trees/checkout-retry/repos/web")" "Retry checkout on network errors" '[{"at":0,"checks":"success","review":"APPROVED","state":"merged"}]'
+pr api 15 you st/checkout-retry/api "$(sha "$HOME/supatree/trees/checkout-retry/repos/api")" "Idempotent checkout" '[{"at":0,"checks":"success","review":"APPROVED"}]'
+pr web 39 you st/checkout-retry/web "$(sha "$HOME/supatree/trees/checkout-retry/repos/web")" "Retry checkout on network errors" '[{"at":0,"checks":"success","review":"APPROVED"}]'
 
 tree order-export
 change order-export api internal/orders/export.go "package orders // CSV export of a merchant's orders." "orders: CSV export"
@@ -441,12 +441,19 @@ pr web 42 mira mira/rate-limit-errors "$(git -C "$WORK/web" rev-parse mira/rate-
     printf '\n  ]\n}\n'
 } > "$D/gh/state.json"
 
+# The watcher's ledger is what `history` and the dashboard's feed read: give
+# it a round with checkout-retry approved, then one after its PRs merged.
+supatree watch --once >/dev/null 2>&1 || true
+gh demo merge acme/api 15
+gh demo merge acme/web 39
+supatree watch --once >/dev/null 2>&1 || true
+
 # ---------------------------------------------------------------- scenario
 
 cp "$REPO"/demo/actors/common/*.yml "$D/actors/" 2>/dev/null || true
 cp "$REPO/demo/actors/$SCENARIO"/*.yml "$D/actors/" 2>/dev/null || true
 if [ -x "$REPO/demo/actors/$SCENARIO/setup.sh" ]; then
-    "$REPO/demo/actors/$SCENARIO/setup.sh"
+    (cd "$REPO" && "demo/actors/$SCENARIO/setup.sh")
 fi
 
 echo "demo sandbox ready: $DEMO_DIR ($SCENARIO)"

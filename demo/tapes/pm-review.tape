@@ -5,20 +5,9 @@
 Output demo/out/pm-review.gif
 Output demo/out/pm-review.mp4
 
-Set Shell bash
-Set FontFamily "JetBrains Mono"
-Set FontSize 15
-Set Width 1600
-Set Height 900
-Set Padding 12
-Set TypingSpeed 45ms
-Set WaitTimeout 120s
+Source demo/tapes/lib/settings.tape
 
-Hide
-Type `eval "$(demo/setup.sh env)" && clear && supatree start demo` Enter
-# A cold start opens the top PM, which greets.
-Wait+Screen /What's next\?/
-Show
+Source demo/tapes/lib/start.tape
 Sleep 2s
 
 Type "Can you review acme/api#17 and acme/web#42? Jonas and Mira want them in today."

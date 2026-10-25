@@ -1,0 +1,19 @@
+steps:
+  - say: "I'm the docs PM. I keep acme/docs in step with what api ships, and leave the rest to the top PM."
+  - input: true
+  - think: 1s
+  - tool: list_trees
+    lines: 8
+  - say: "search-filters already has docs#8 open for its guide. order-export adds a CSV export to api#16 with nothing in docs yet, so that's the gap: shall I start a tree to document it?"
+  - input: true
+  - tool: new_tree
+    args:
+      stack: acme
+      name: docs-order-export
+      intent: "Document the CSV order export from api#16"
+      brief: "Write guides/exporting-orders.md for the CSV export added in acme/api#16, then open a PR."
+      start: true
+      asked: true
+    lines: 3
+  - say: "docs-order-export is started and briefed. I'll report when its PR is up."
+idle: "Noted."

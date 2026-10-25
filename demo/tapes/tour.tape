@@ -3,28 +3,13 @@
 Output demo/out/tour.gif
 Output demo/out/tour.mp4
 
-Set Shell bash
-Set FontFamily "JetBrains Mono"
-Set FontSize 15
-Set Width 1600
-Set Height 900
-Set Padding 12
-Set TypingSpeed 60ms
-Set WaitTimeout 90s
+Source demo/tapes/lib/settings.tape
 
-Hide
-Type `eval "$(demo/setup.sh env)" && clear && supatree start demo` Enter
-Wait+Screen /lisbon is fresh/
-Show
+Source demo/tapes/lib/start.tape
 Sleep 3s
 
 # Into the sidebar, and a refresh that fetches every tree's PRs.
-Ctrl+p
-Sleep 300ms
-Type "h"
-Sleep 300ms
-Escape
-Sleep 500ms
+Source demo/tapes/lib/sidebar.tape
 Type "r"
 Wait+Screen /#16/
 Screenshot demo/out/tour-1-sidebar.png

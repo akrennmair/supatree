@@ -59,17 +59,28 @@ jobs:
           tar xzf "${tarball}"
           sudo mv nono /usr/local/bin/
 
-      - name: Install ttyd, ffmpeg, fonts and VHS
+      - name: Install ttyd
+        timeout-minutes: 2
         run: |
           curl -fsSL -o ttyd "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.x86_64"
           echo "${TTYD_SHA256}  ttyd" | sha256sum -c -
           chmod +x ttyd
           sudo mv ttyd /usr/local/bin/
+
+      - name: Install ffmpeg and fonts
+        timeout-minutes: 8
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg fonts-jetbrains-mono >/dev/null
-          go install "github.com/charmbracelet/vhs@${VHS_VERSION}"
+          sudo apt-get install -y -qq --no-install-recommends ffmpeg fonts-jetbrains-mono
+
+      - name: Install VHS
+        timeout-minutes: 5
+        run: go install "github.com/charmbracelet/vhs@${VHS_VERSION}"
 
       - name: Record
+        timeout-minutes: 20
         env:
           TAPE: ${{ inputs.tape }}
         run: |

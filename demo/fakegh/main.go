@@ -217,6 +217,9 @@ func run(args []string, stdin io.Reader, stdout io.Writer) (int, error) {
 		return 0, nil
 	case args[0] == "api":
 		return api(args[1:], stdin, stdout)
+	case len(args) == 4 && args[0] == "demo" && args[1] == "merge":
+		// Not gh's: how a scene's setup has an author merge a PR.
+		return merge(args[2], args[3])
 	case len(args) >= 2 && args[0] == "pr":
 		switch args[1] {
 		case "view":
@@ -592,6 +595,22 @@ func postReview(repo string, number int, stdin io.Reader, stdout io.Writer) (int
 		"state":    reviewState(in.Event),
 		"body":     posted.Body,
 		"html_url": fmt.Sprintf("https://github.com/%s/pull/%d#pullrequestreview-%d", repo, number, posted.ID),
+	})
+}
+
+// merge moves a PR to merged now.
+func merge(repo, number string) (int, error) {
+	n, err := strconv.Atoi(strings.TrimPrefix(number, "#"))
+	if err != nil {
+		return 1, err
+	}
+	return 0, withState(func(s *State) (bool, error) {
+		p := s.find(repo, n)
+		if p == nil {
+			return false, fmt.Errorf("fake gh: no PR %s#%d", repo, n)
+		}
+		p.Timeline = append(p.Timeline, Step{At: time.Since(p.Created).Seconds(), State: "merged"})
+		return true, nil
 	})
 }
 

@@ -1,0 +1,3 @@
+steps:
+  - say: "Morning. order-export is approved and search-filters is waiting on CI. Start a tree from the sidebar with n whenever you're ready."
+idle: "I'll keep an eye on it."
