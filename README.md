@@ -456,3 +456,18 @@ All agents run at the supatree root under a nono sandbox that allows the whole t
 
 The **workbench** MCP tools (`create_pr`, `rename_branch`) are for plain workbench worktrees, not supatrees: inside a supatree they detect `SUPATREE=1` and redirect you to the supatree tools above rather than acting on the wrong branch.
 
+
+## Contributing
+
+**Start with an issue.** Open it on whichever of [workbench](https://github.com/panamafrancis/workbench/issues) or [supatree](https://github.com/panamafrancis/supatree/issues) the change mostly belongs to, and only there — not on both, even when the change touches both repos. As a rule of thumb, workbench's CLI, TUI and the shared `pkg/*` packages belong to workbench; supatree's commands, PM, watcher and MCP tools belong to supatree. Pull requests can only be opened by collaborators, so agree on the change in the issue first; we add you as a collaborator if you are going to send it.
+
+**Work in the supatree-workbench stack.** Supatree is built on workbench's packages, so a change often spans both repos: workbench first, then supatree bumped to the merged workbench commit. The [supatree-workbench stack](https://github.com/panamafrancis/supatree-workbench-stack) checks out both side by side, with a `go.work` so supatree builds against your local workbench changes:
+
+```sh
+supatree stack clone git@github.com:panamafrancis/supatree-workbench-stack.git
+supatree new --stack=supatree-workbench-stack
+```
+
+Open the PRs with the supatree `create_prs` tool, which opens them in merge order (workbench, then supatree) and links them to each other. A change to supatree alone still works in the stack; only supatree gets a PR.
+
+**Merging.** `main` takes changes only through pull requests, merged as merge commits (no squash or rebase). A PR needs `ci` and `e2e-linux` to pass on a branch that is up to date with `main`, and one approval; [CODEOWNERS](.github/CODEOWNERS) are requested for review. Run `make ci` before you push.
