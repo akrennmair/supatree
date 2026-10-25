@@ -389,7 +389,7 @@ func TestRunStackEditOp(t *testing.T) {
 	}
 
 	// Only the PM may ask.
-	tree := ClaimedOp{Dir: filepath.Join(TreesStateDir(), "lima"), Op: Op{Kind: OpStack, Stack: "s", Action: StackActionRm, Alias: "a"}}
+	tree := ClaimedOp{Dir: filepath.Join(TreesStateDir(), treeLima), Op: Op{Kind: OpStack, Stack: "s", Action: StackActionRm, Alias: "a"}}
 	if res := c.RunOp(tree, OpHooks{}); res.Err == "" {
 		t.Error("a tree was allowed to edit its stack")
 	}
