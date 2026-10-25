@@ -23,3 +23,4 @@ Type "D"
 Wait+Screen /order-export/
 Sleep 4s
 Screenshot demo/out/tour-2-dash.png
+Sleep 1s

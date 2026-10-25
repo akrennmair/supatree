@@ -19,3 +19,4 @@ Enter
 Wait+Screen /only needs merging/
 Sleep 5s
 Screenshot demo/out/close-review-2-history.png
+Sleep 1s

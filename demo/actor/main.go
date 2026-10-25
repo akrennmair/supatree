@@ -427,13 +427,14 @@ func (a *actor) call(tool string, args map[string]any, lines int) (string, error
 }
 
 func (a *actor) run(command string, lines int) {
-	if first, _, multi := strings.Cut(command, "\n"); multi {
-		command = first + " …"
+	shown := command
+	if first, _, multi := strings.Cut(shown, "\n"); multi {
+		shown = first + " …"
 	}
-	if r := []rune(command); len(r) > width()-10 {
-		command = string(r[:width()-11]) + "…"
+	if r := []rune(shown); len(r) > width()-10 {
+		shown = string(r[:width()-11]) + "…"
 	}
-	fmt.Printf("%s● %sBash%s(%s)\n", green, reset+bold, reset, command)
+	fmt.Printf("%s● %sBash%s(%s)\n", green, reset+bold, reset, shown)
 	stop := spin("Running")
 	cmd := exec.CommandContext(context.Background(), "sh", "-c", command)
 	cmd.Env = os.Environ()

@@ -38,3 +38,4 @@ Sleep 16s
 Type "r"
 Sleep 5s
 Screenshot demo/out/new-tree-3-approved.png
+Sleep 1s

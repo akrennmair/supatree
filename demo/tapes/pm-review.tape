@@ -35,3 +35,4 @@ Escape
 Wait+Screen /The review is in/
 Sleep 4s
 Screenshot demo/out/pm-review-3-reported.png
+Sleep 1s
