@@ -15,7 +15,7 @@ func TestPickAgentPane(t *testing.T) {
 		{ID: 0, TabName: PMTab, Title: "sidebar", Command: "bash -c while true; do supatree ls; done"},
 		{ID: 1, TabName: PMTab, Title: PMTab, Command: agentExecCmd},
 		{ID: 2, TabName: "accra", Title: "accra", Command: "/opt/homebrew/bin/nono run --profile p -- claude"},
-		{ID: 3, TabName: "lima", Title: "✳ Fixing bugs", Command: agentExecCmd},
+		{ID: 3, TabName: treeLima, Title: "✳ Fixing bugs", Command: agentExecCmd},
 		{ID: 4, TabName: "wb", Title: "✳ Fixing bugs", Command: agentExecCmd},
 		{ID: 5, TabName: "wb", Title: "~/trees/repos/wb", Command: "/bin/zsh"},
 		{ID: 6, TabName: "oslo", Title: "oslo", Command: "/bin/zsh"},
@@ -32,7 +32,7 @@ func TestPickAgentPane(t *testing.T) {
 	}{
 		{PMTab, 1, true},    // behind agent-exec, titled after the tab
 		{"accra", 2, true},  // nono directly
-		{"lima", 3, true},   // retitled, but the only agent
+		{treeLima, 3, true}, // retitled, but the only agent
 		{"wb", 4, true},     // a path-titled shell never wins
 		{"oslo", 0, false},  // a shell titled after the tab is not an agent
 		{"rome", 0, false},  // exited

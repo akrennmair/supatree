@@ -17,7 +17,7 @@ func TestKeepFocus(t *testing.T) {
 
 	// The launched tab has the focus, gets it back once after the restore,
 	// then the human moves to a third tab.
-	reads := []string{"lima", "lima", "pm", "elsewhere"}
+	reads := []string{treeLima, treeLima, "pm", "elsewhere"}
 	var gone []string
 	focusedTab = func() string {
 		if len(reads) == 0 {
@@ -31,7 +31,7 @@ func TestKeepFocus(t *testing.T) {
 		gone = append(gone, name)
 		return nil
 	}
-	keepFocus("pm", "lima")
+	keepFocus("pm", treeLima)
 	if len(gone) != 2 || gone[0] != "pm" || gone[1] != "pm" {
 		t.Fatalf("went to %v, want pm twice (once per time lima had the focus)", gone)
 	}

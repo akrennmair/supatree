@@ -222,7 +222,7 @@ func TestRunningPM(t *testing.T) {
 func TestLaunchCaller(t *testing.T) {
 	orig := os.Args
 	t.Cleanup(func() { os.Args = orig })
-	os.Args = []string{"supatree", "open", "lima", "--agent", MainAgent, "--background"}
+	os.Args = []string{"supatree", "open", treeLima, "--agent", MainAgent, "--background"}
 	if got := launchCaller(); got != "watcher" {
 		t.Errorf("background open: %q, want watcher", got)
 	}

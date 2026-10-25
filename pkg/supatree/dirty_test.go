@@ -40,7 +40,7 @@ func writeSnapshot(t *testing.T, snap dirtySnapshot) {
 func TestDirtyMembersSharesOneSnapshot(t *testing.T) {
 	testutil.IsolateHome(t)
 	repo := dirtyRepo(t)
-	insts := []*Instance{{Name: "lima", Members: []Member{{Alias: "api", Path: repo, Exists: true}}}}
+	insts := []*Instance{{Name: treeLima, Members: []Member{{Alias: "api", Path: repo, Exists: true}}}}
 
 	writeSnapshot(t, dirtySnapshot{At: time.Now(), Checked: map[string]bool{repo: false}})
 	if got := DirtyMembers(insts, time.Minute, false); got[repo] {
@@ -64,7 +64,7 @@ func TestDirtyMembersChecksUnseenPaths(t *testing.T) {
 	testutil.IsolateHome(t)
 	repo := dirtyRepo(t)
 	writeSnapshot(t, dirtySnapshot{At: time.Now(), Checked: map[string]bool{}})
-	insts := []*Instance{{Name: "lima", Members: []Member{{Alias: "api", Path: repo, Exists: true}}}}
+	insts := []*Instance{{Name: treeLima, Members: []Member{{Alias: "api", Path: repo, Exists: true}}}}
 	if got := DirtyMembers(insts, time.Minute, false); !got[repo] {
 		t.Fatal("a member missing from the snapshot was reported clean")
 	}
