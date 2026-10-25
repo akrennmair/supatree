@@ -1,0 +1,18 @@
+steps:
+  - say: "Morning. Four trees on acme: checkout-retry is merged, order-export is approved, search-filters has CI running on web#41, and lisbon is fresh. What's next?"
+  - input: true
+  - think: 2s
+  - say: "api#17 adds per-key rate limiting and web#42 turns the resulting 429s into a friendly checkout message, so they belong in one review. I'll open a review tree for the pair and start a reviewer on it."
+  - tool: new_tree
+    args:
+      stack: acme
+      name: review-rate-limit
+      prs: "acme/api#17,acme/web#42"
+      intent: "Rate limiting (api#17) with its checkout errors (web#42)"
+      start: true
+      asked: true
+  - say: "The reviewer is working in its own tab. I'll tell you when it reports back."
+  - wait_request: true
+    lines: 4
+  - say: "The review is in: both PRs approved, with one suggestion on api#17 — the limiter never forgets idle keys. The review tree is done; say the word and I'll close it."
+idle: "Noted."
