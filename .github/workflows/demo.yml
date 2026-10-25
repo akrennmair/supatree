@@ -72,8 +72,11 @@ jobs:
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends ffmpeg fonts-jetbrains-mono
+          # man-db rebuilds its index after every install, which can take many
+          # minutes on a runner.
+          sudo rm -f /var/lib/man-db/auto-update
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-jetbrains-mono
 
       - name: Install VHS
         timeout-minutes: 5
