@@ -6,4 +6,4 @@ Set Width 1600
 Set Height 900
 Set Padding 12
 Set TypingSpeed 45ms
-Set WaitTimeout 120s
+Set WaitTimeout 45s

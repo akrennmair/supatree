@@ -1,7 +1,6 @@
 # The authors merged what was reviewed. Close the review tree, and ask what
 # the week amounted to.
 
-Output demo/out/close-review.gif
 Output demo/out/close-review.mp4
 Source demo/tapes/lib/settings.tape
 Source demo/tapes/lib/start.tape

@@ -298,11 +298,20 @@ func (a *actor) read() string {
 	fmt.Printf("%s>%s ", bold, reset)
 	line, err := a.in.ReadString('\n')
 	if err != nil && line == "" {
-		// No terminal left to read: stay up rather than close the pane.
+		if !isTerminal() {
+			// Run headless, as a scene's setup does: the part is played.
+			os.Exit(0)
+		}
+		// The terminal went away: stay up rather than close the pane.
 		select {}
 	}
 	fmt.Println()
 	return strings.TrimSpace(line)
+}
+
+func isTerminal() bool {
+	_, err := unix.IoctlGetTermios(int(os.Stdin.Fd()), ioctlGetTermios)
+	return err == nil
 }
 
 func (a *actor) idle(reply string) {
@@ -418,6 +427,9 @@ func (a *actor) call(tool string, args map[string]any, lines int) (string, error
 }
 
 func (a *actor) run(command string, lines int) {
+	if first, _, multi := strings.Cut(command, "\n"); multi {
+		command = first + " …"
+	}
 	if r := []rune(command); len(r) > width()-10 {
 		command = string(r[:width()-11]) + "…"
 	}

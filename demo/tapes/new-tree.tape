@@ -2,7 +2,6 @@
 # commits in both, opens the PRs in dependency order, and the sidebar follows
 # them through CI to approval.
 
-Output demo/out/new-tree.gif
 Output demo/out/new-tree.mp4
 Source demo/tapes/lib/settings.tape
 Source demo/tapes/lib/start.tape

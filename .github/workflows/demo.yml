@@ -86,6 +86,8 @@ jobs:
         timeout-minutes: 20
         env:
           TAPE: ${{ inputs.tape }}
+          # GIFs only where they get published: main and releases.
+          DEMO_GIF: ${{ github.event_name == 'push' && '1' || '' }}
         run: |
           if [ -n "$TAPE" ]; then demo/record.sh "$TAPE"; else demo/record.sh; fi
 

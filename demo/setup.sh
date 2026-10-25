@@ -357,6 +357,10 @@ supatree init >/dev/null
 # no packs. Beyond the base it grants what supatree-agent would (supatree's
 # config, its agent cache) plus the fakes, the git config that routes ssh to
 # the fake remotes, and the fake remotes and GitHub themselves.
+# git aborts when it cannot read a system config that exists (CI runners have
+# one), so grant it where it is there.
+SYSTEM_GITCONFIG=""
+[ -f /etc/gitconfig ] && SYSTEM_GITCONFIG=', "/etc/gitconfig"'
 cat > "$HOME/.config/nono/profiles/supatree-demo.json" <<EOF
 {
   "extends": ["go-dev"],
@@ -364,7 +368,7 @@ cat > "$HOME/.config/nono/profiles/supatree-demo.json" <<EOF
   "filesystem": {
     "allow": ["$D", "$XDG_CACHE_HOME/supatree/agent"],
     "read": ["$HOME/.local/bin", "$XDG_CONFIG_HOME/supatree"],
-    "read_file": ["$HOME/.gitconfig"]
+    "read_file": ["$HOME/.gitconfig"$SYSTEM_GITCONFIG]
   }
 }
 EOF

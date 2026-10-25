@@ -7,6 +7,9 @@ set -euo pipefail
 #
 #   demo/record.sh              every tape
 #   demo/record.sh pm-review    one
+#
+# Tapes record MP4. DEMO_GIF=1 also converts each to a GIF, which takes
+# longer than the recording; CI does it only for main and releases.
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 cd "$REPO"
@@ -30,4 +33,9 @@ for tape in "${tapes[@]}"; do
         cp -r "$XDG_STATE_HOME/supatree/logs" "demo/out/$tape.logs" 2>/dev/null || true
     )
     [ "$status" -eq 0 ] || { echo "vhs failed on $tape ($status)" >&2; exit "$status"; }
+    if [ -n "${DEMO_GIF:-}" ]; then
+        ffmpeg -loglevel error -y -i "demo/out/$tape.mp4" \
+            -vf "fps=12,scale=1280:-1:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer" \
+            "demo/out/$tape.gif"
+    fi
 done

@@ -1,7 +1,4 @@
 steps:
-  # TEMPORARY diagnostic: why the PM's sandbox reads members as foreign.
-  - run: 'for m in api web; do git -C "$HOME/supatree/trees/review-rate-limit/repos/$m" symbolic-ref --short HEAD 2>&1; echo "exit=$?"; done; ls -la "$HOME/supatree/trees/review-rate-limit/repos/api/.git" 2>&1; cat "$HOME/supatree/trees/review-rate-limit/repos/api/.git" 2>&1'
-    lines: 12
   - say: "Morning. Jonas and Mira merged api#17 and web#42 after your approvals, so review-rate-limit is reviewed and can go. Close it?"
   - input: true
   - tool: remove_tree

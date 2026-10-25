@@ -2,7 +2,6 @@
 # review tree, a reviewer agent reads the change and posts both reviews, and
 # the PM reports back.
 
-Output demo/out/pm-review.gif
 Output demo/out/pm-review.mp4
 
 Source demo/tapes/lib/settings.tape

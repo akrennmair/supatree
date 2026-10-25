@@ -1,7 +1,6 @@
 # Add a second PM for a narrower job: docs. It finds the gap and starts a
 # tree to fill it.
 
-Output demo/out/new-pm.gif
 Output demo/out/new-pm.mp4
 Source demo/tapes/lib/settings.tape
 Source demo/tapes/lib/start.tape
