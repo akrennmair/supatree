@@ -14,6 +14,10 @@ Sleep 800ms
 Type "bulk-refunds"
 Sleep 500ms
 Enter
+# The new tree is selected once it exists; enter opens its agent.
+Wait+Screen /created bulk-refunds/
+Sleep 1s
+Enter
 Wait+Screen /What are we building/
 Sleep 1s
 

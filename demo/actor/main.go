@@ -157,6 +157,8 @@ func width() int {
 }
 
 func (a *actor) banner() {
+	// Clear what ran before us in the pane: nono's listing of the sandbox.
+	fmt.Print("\x1b[2J\x1b[3J\x1b[H")
 	name := who()
 	if os.Getenv("SUPATREE_PM") == "" {
 		name = os.Getenv("SUPATREE_AGENT") + " · " + os.Getenv("SUPATREE_NAME")
@@ -245,7 +247,7 @@ func (a *actor) say(text string) {
 	for i, line := range lines {
 		lead := "  "
 		if i == 0 {
-			lead = "⏺ "
+			lead = "● "
 		}
 		fmt.Print(lead)
 		for j, word := range strings.Fields(line) {
@@ -315,7 +317,7 @@ func (a *actor) idle(reply string) {
 }
 
 func (a *actor) fail(err error) {
-	fmt.Printf("%s⏺ actor: %v%s\n\n", red, err, reset)
+	fmt.Printf("%s● actor: %v%s\n\n", red, err, reset)
 	a.idle("")
 }
 
@@ -383,7 +385,7 @@ func result(out string, lines int, failed bool) {
 		}
 		lead := "     "
 		if i == 0 {
-			lead = "  ⎿  "
+			lead = "  └  "
 		}
 		fmt.Printf("%s%s%s%s\n", lead, color, line, reset)
 	}
@@ -395,7 +397,7 @@ func (a *actor) call(tool string, args map[string]any, lines int) (string, error
 	if r := []rune(call); len(r) > width()-14 {
 		call = string(r[:width()-15]) + "…"
 	}
-	fmt.Printf("%s⏺ supatree - %s%s%s\n", green, reset+bold, call, reset)
+	fmt.Printf("%s● supatree - %s%s%s\n", green, reset+bold, call, reset)
 	if a.mcp == nil {
 		c, err := startMCP()
 		if err != nil {
@@ -419,7 +421,7 @@ func (a *actor) run(command string, lines int) {
 	if r := []rune(command); len(r) > width()-10 {
 		command = string(r[:width()-11]) + "…"
 	}
-	fmt.Printf("%s⏺ %sBash%s(%s)\n", green, reset+bold, reset, command)
+	fmt.Printf("%s● %sBash%s(%s)\n", green, reset+bold, reset, command)
 	stop := spin("Running")
 	cmd := exec.CommandContext(context.Background(), "sh", "-c", command)
 	cmd.Env = os.Environ()
@@ -448,7 +450,7 @@ func (a *actor) waitRequest(lines int) {
 		out, err := a.mcp.call("requests", map[string]any{})
 		if err == nil && !strings.HasPrefix(strings.TrimSpace(out), "no pending requests") {
 			stop()
-			fmt.Printf("%s⏺ supatree - %srequests%s()\n", green, reset+bold, reset)
+			fmt.Printf("%s● supatree - %srequests%s()\n", green, reset+bold, reset)
 			result(out, lines, false)
 			a.vars["result"] = out
 			return

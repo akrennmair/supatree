@@ -24,6 +24,7 @@ Sleep 2s
 Type "Yes, go ahead."
 Sleep 600ms
 Enter
-Wait+Screen /started and briefed/
+Wait+Screen /report when its PR is up/
+Sleep 2s
 Screenshot demo/out/new-pm-1-started.png
-Sleep 5s
+Sleep 4s
