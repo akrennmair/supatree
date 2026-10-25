@@ -27,14 +27,20 @@ Wait+Screen /cross-linked/
 Screenshot demo/out/new-tree-1-prs.png
 Sleep 3s
 
-# The sidebar follows the new PRs: CI passes, then approval.
+# The sidebar follows the new PRs while CI runs; the dashboard shows them
+# approved.
 Source demo/tapes/lib/sidebar.tape
+Type "zR"
+Sleep 800ms
 Type "r"
 Sleep 20s
 Type "r"
 Sleep 4s
 Screenshot demo/out/new-tree-2-passing.png
 Sleep 16s
+Type "D"
+Wait+Screen /bulk-refunds/
+Sleep 1s
 Type "r"
 Sleep 5s
 Screenshot demo/out/new-tree-3-approved.png

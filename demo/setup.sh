@@ -375,8 +375,10 @@ EOF
 CONFIG="$XDG_CONFIG_HOME/supatree/config.yml"
 sed -i.bak 's/nono_profile: supatree-agent/nono_profile: supatree-demo/' "$CONFIG"
 rm -f "$CONFIG.bak"
+# A wider sidebar than the default 25%, so PR numbers are not cut off.
 cat >> "$CONFIG" <<'EOF'
 watch_interval: 5s
+sidebar_width: 30%
 EOF
 
 supatree scaffold acme --repos="api=git@github.com:acme/api.git,web=git@github.com:acme/web.git,docs=git@github.com:acme/docs.git" >/dev/null
