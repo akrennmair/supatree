@@ -1,0 +1,3 @@
+steps:
+  - say: "Morning. Everything on acme is moving. Press p in the sidebar to add a PM for a narrower job."
+idle: "Noted."

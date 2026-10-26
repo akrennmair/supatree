@@ -1,0 +1,42 @@
+steps:
+  - say: "I'm in bulk-refunds, with api, web and docs checked out on st/bulk-refunds/*. What are we building?"
+  - input: true
+  - think: 2s
+  - say: "That's an endpoint in api and a button in web that calls it, so two PRs, api first. Starting with the endpoint."
+  - run: |
+      cd repos/api && cat >> internal/orders/orders.go <<'GO'
+
+      // RegisterRefunds adds POST /v1/orders/refunds, which refunds every order
+      // in the request body that is paid.
+      func RegisterRefunds(mux *http.ServeMux, s *Store) {
+      	mux.HandleFunc("POST /v1/orders/refunds", func(w http.ResponseWriter, r *http.Request) {
+      		var ids []string
+      		if err := json.NewDecoder(r.Body).Decode(&ids); err != nil {
+      			http.Error(w, err.Error(), http.StatusBadRequest)
+      			return
+      		}
+      		_ = json.NewEncoder(w).Encode(s.Refund(ids))
+      	})
+      }
+      GO
+      git add -A && git commit -qm "orders: bulk refund endpoint" && git log --oneline -1
+    lines: 2
+  - run: |
+      cd repos/web && mkdir -p src/orders && cat > src/orders/BulkRefund.tsx <<'TSX'
+      export function BulkRefund({ ids }: { ids: string[] }) {
+        async function refund() {
+          await fetch("/v1/orders/refunds", { method: "POST", body: JSON.stringify(ids) });
+        }
+        return <button onClick={refund}>Refund {ids.length} orders</button>;
+      }
+      TSX
+      git add -A && git commit -qm "orders: bulk refund button" && git log --oneline -1
+    lines: 2
+  - say: "Both changes are committed. Opening the PRs in dependency order, so web's PR says it builds on api's."
+  - tool: create_prs
+    args:
+      title: "Bulk refunds"
+      body: "Refund many paid orders at once: POST /v1/orders/refunds in api, a button in web."
+    lines: 4
+  - say: "acme/api and acme/web each have a PR, cross-linked. CI is running; the sidebar will show them land."
+idle: "The PRs are open; I'll pick up review comments when they come."

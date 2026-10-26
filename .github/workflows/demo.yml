@@ -1,0 +1,120 @@
+name: Demo
+
+# Records the scripted demo (demo/record.sh): the real supatree, with only
+# GitHub and the agents faked. It runs on release tags, where the recordings
+# are attached to the release, and on demand; recordings are also uploaded as
+# an artifact.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tape:
+        description: 'One tape to record (default: all)'
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ZELLIJ_VERSION: v0.45.1
+      # sha256 of the zellij binary inside the release tarball
+      ZELLIJ_SHA256: d006c521dcb475a6005d741e9dd7c5758e5a23b28dd60a5c10cebfa4876319dd
+      NONO_VERSION: v0.80.0
+      NONO_SHA256: 6da665b61999570c10dffc7da78828fe1fb7f3cac53319e505cebecaef17037f
+      TTYD_VERSION: 1.7.7
+      TTYD_SHA256: 8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55
+      VHS_VERSION: v0.12.1
+      # Ubuntu's AppArmor refuses Chromium's user-namespace sandbox.
+      VHS_NO_SANDBOX: 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install zellij
+        run: |
+          curl -fsSL "https://github.com/zellij-org/zellij/releases/download/${ZELLIJ_VERSION}/zellij-x86_64-unknown-linux-musl.tar.gz" | tar xz
+          echo "${ZELLIJ_SHA256}  zellij" | sha256sum -c -
+          sudo mv zellij /usr/local/bin/
+
+      - name: Install nono
+        run: |
+          tarball="nono-${NONO_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          curl -fsSLO "https://github.com/always-further/nono/releases/download/${NONO_VERSION}/${tarball}"
+          echo "${NONO_SHA256}  ${tarball}" | sha256sum -c -
+          tar xzf "${tarball}"
+          sudo mv nono /usr/local/bin/
+
+      - name: Install ttyd
+        timeout-minutes: 2
+        run: |
+          curl -fsSL -o ttyd "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.x86_64"
+          echo "${TTYD_SHA256}  ttyd" | sha256sum -c -
+          chmod +x ttyd
+          sudo mv ttyd /usr/local/bin/
+
+      - name: Install ffmpeg and fonts
+        timeout-minutes: 8
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          # man-db rebuilds its index after every install, which can take many
+          # minutes on a runner.
+          sudo rm -f /var/lib/man-db/auto-update
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-jetbrains-mono
+
+      - name: Install VHS
+        timeout-minutes: 5
+        run: go install "github.com/charmbracelet/vhs@${VHS_VERSION}"
+
+      - name: Record
+        timeout-minutes: 20
+        env:
+          TAPE: ${{ inputs.tape }}
+          # GIFs only where they get published: releases.
+          DEMO_GIF: ${{ github.event_name == 'push' && '1' || '' }}
+        run: |
+          if [ -n "$TAPE" ]; then demo/record.sh "$TAPE"; else demo/record.sh; fi
+
+      - name: Upload recordings
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: demo
+          path: demo/out/
+          if-no-files-found: warn
+
+  attach:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: record
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: demo
+          path: demo/
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          # The release workflow creates the release; wait for it.
+          for _ in $(seq 30); do gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1 && break; sleep 10; done
+          for f in demo/*.gif demo/*.mp4; do
+            [ -e "$f" ] && mv "$f" "$(dirname "$f")/demo-$(basename "$f")"
+          done
+          gh release upload "$TAG" demo/demo-*.gif demo/demo-*.mp4 --repo "$REPO" --clobber

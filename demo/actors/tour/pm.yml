@@ -1,0 +1,3 @@
+steps:
+  - say: "Morning. Four trees on the acme stack: checkout-retry is merged, order-export is approved and waiting on you, search-filters has CI running on web#41, and lisbon is fresh."
+idle: "Ask me in the pm-review scene."

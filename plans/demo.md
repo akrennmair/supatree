@@ -148,10 +148,9 @@ demo/
 
 ## Publishing
 
-A `demo` workflow on pushes to `main` and on `v*` tags runs `make demo` on
-Linux, uploads `demo/out/` as an artifact, attaches the videos to the release
-on tags, and publishes them where the README can embed the current one (a
-`demo` branch or GitHub Pages).
+A `demo` workflow on `v*` tags (and on demand) runs `make demo` on Linux,
+uploads `demo/out/` as an artifact and attaches the videos to the release,
+where the README can embed the latest one.
 
 ## Risks
 

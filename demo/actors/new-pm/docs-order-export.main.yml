@@ -1,0 +1,17 @@
+steps:
+  - tool: inbox
+    lines: 3
+  - say: "Writing the guide for the CSV export."
+  - run: |
+      cd repos/docs && cat > guides/exporting-orders.md <<'MD'
+      # Exporting orders
+
+      `GET /v1/orders/export` returns every order as CSV: id, status, total.
+      MD
+      git add -A && git commit -qm "docs: exporting orders as CSV" && git log --oneline -1
+    lines: 2
+  - tool: create_prs
+    args:
+      title: "Document the CSV order export"
+    lines: 3
+idle: "The docs PR is open."

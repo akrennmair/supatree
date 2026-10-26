@@ -1,0 +1,14 @@
+steps:
+  - say: "Morning. Jonas and Mira merged api#17 and web#42 after your approvals, so review-rate-limit is reviewed and can go. Close it?"
+  - input: true
+  - tool: remove_tree
+    args:
+      tree: review-rate-limit
+      asked: true
+    lines: 3
+  - say: "Closed. Anything else?"
+  - input: true
+  - tool: history
+    lines: 10
+  - say: "This week: checkout-retry shipped, and you reviewed the rate limiting change across api and web. order-export is approved and only needs merging."
+idle: "Noted."
