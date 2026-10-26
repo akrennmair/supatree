@@ -3,6 +3,12 @@
 Multi-repo worktrees for a single cross-repo issue, each agent in a
 [nono](https://nono.sh) sandbox.
 
+![A PM agent opening a review tree for two PRs and reporting back](https://github.com/panamafrancis/supatree/releases/latest/download/demo-pm-review.gif)
+
+The demo is recorded from scripts on every release ([how](demo/README.md));
+the [release assets](https://github.com/panamafrancis/supatree/releases/latest)
+hold the MP4s and the other scenes.
+
 ## Install
 
 ```sh
