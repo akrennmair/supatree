@@ -1,17 +1,13 @@
 name: Demo
 
 # Records the scripted demo (demo/record.sh): the real supatree, with only
-# GitHub and the agents faked. Recordings are uploaded as an artifact; on a
-# release tag they are also attached to the release.
+# GitHub and the agents faked. It runs on release tags, where the recordings
+# are attached to the release, and on demand; recordings are also uploaded as
+# an artifact.
 
 on:
   push:
-    branches: [main]
     tags: ['v*']
-  pull_request:
-    paths:
-      - 'demo/**'
-      - '.github/workflows/demo.yml'
   workflow_dispatch:
     inputs:
       tape:
@@ -86,7 +82,7 @@ jobs:
         timeout-minutes: 20
         env:
           TAPE: ${{ inputs.tape }}
-          # GIFs only where they get published: main and releases.
+          # GIFs only where they get published: releases.
           DEMO_GIF: ${{ github.event_name == 'push' && '1' || '' }}
         run: |
           if [ -n "$TAPE" ]; then demo/record.sh "$TAPE"; else demo/record.sh; fi

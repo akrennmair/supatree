@@ -27,9 +27,10 @@ make demo TAPE=pm-review  # one
 This needs [VHS](https://github.com/charmbracelet/vhs) (with ttyd and
 ffmpeg), zellij and nono, and must run from a normal terminal: on macOS the
 agents' nono cannot start inside another nono sandbox, such as a supatree
-agent's. CI records every tape on pushes to `main` and on tags (the `demo`
-workflow); a PR touching `demo/` records them too, and the recordings are the
-run's `demo` artifact.
+agent's. CI records every tape on release tags (the `demo` workflow) and
+attaches them to the release; to record from a branch, run the workflow by
+hand (`gh workflow run demo.yml --ref <branch>`, optionally `-f tape=<name>`).
+The recordings are the run's `demo` artifact.
 
 To poke at a scene by hand:
 
